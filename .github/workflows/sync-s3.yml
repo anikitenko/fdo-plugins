@@ -6,7 +6,8 @@ on:
       - main
 
 env:
-  AWS_REGION : "us-east-1"
+  AWS_REGION: "us-east-1"
+  S3_BUCKET: "fdo-plugins"
 
 permissions:
   id-token: write   # This is required for requesting the JWT
@@ -32,4 +33,4 @@ jobs:
       - run: npm run build
 
       - name: Sync dist to S3
-        run: aws s3 sync ./dist s3://fdo-plugins/ --delete
+        run: aws s3 sync ./dist s3://${{ env.S3_BUCKET }}/ --delete --acl public-read

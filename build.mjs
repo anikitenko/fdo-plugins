@@ -1,35 +1,36 @@
 import esbuild from "esbuild";
 import fs from "fs/promises";
 import * as path from "node:path";
-import AWS from 'aws-sdk';
+import {S3Client, ListObjectVersionsCommand} from '@aws-sdk/client-s3';
 
 const files = ["./src/*.ts"];
 const outDir = "./dist";
 const registry = [];
 const regFile = "registry.json"
+const awsS3Region = "us-east-1";
 const awsS3Bucket = "fdo-plugins";
 const awsS3BasePath = `https://${awsS3Bucket}.s3.amazonaws.com`
-const s3 = new AWS.S3({ region: 'us-east-1' });
+
+const s3Client = new S3Client({ region: awsS3Region })
 
 // Function to get all versions of a file from S3
 async function getPluginVersions(pluginName) {
-    const versions = [];
     try {
-        const response = await s3
-            .listObjectVersions({ Bucket: awsS3Bucket, Prefix: `${pluginName}` })
-            .promise();
-
-        response.Versions.forEach(version => {
-            if (!version.DeleteMarker) {
-                versions.push({
-                    versionId: version.VersionId,
-                    lastModified: version.LastModified,
-                    downloadUrl: `https://${awsS3Bucket}.s3.amazonaws.com/${pluginName}?versionId=${version.VersionId}`,
-                });
-            }
-        });
-
-        return versions;
+        const response = await s3Client.send(
+            new ListObjectVersionsCommand({
+                Bucket: awsS3Bucket,
+                Key: pluginName,
+            })
+        );
+        if (!response.Versions) {
+            console.log("No versions found.");
+            return [];
+        } else {
+            return response.Versions.map((version) => ({
+                ...version,
+                DownloadUrl: `https://${awsS3Bucket}.s3.amazonaws.com/${pluginName}?versionId=${version.VersionId}`,
+            }));
+        }
     } catch (error) {
         console.error(`Error fetching versions for ${pluginName}:`, error);
         return [];
@@ -76,10 +77,7 @@ async function extractMetadata() {
                     const pluginInstance = new PluginClass();
                     const versions = await getPluginVersions(file);
                     registry.push({
-                        name: pluginInstance.metadata.name,
-                        version: pluginInstance.metadata.version,
-                        description: pluginInstance.metadata.description,
-                        author: pluginInstance.metadata.author,
+                        ...pluginInstance.metadata,
                         downloadUrl: `${awsS3BasePath}/${file}`,
                         versions: versions
                     });
