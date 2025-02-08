@@ -20,8 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 23
-      - run: npm ci
-      - run: npm run build
 
       - name: Set up AWS CLI
         uses: aws-actions/configure-aws-credentials@v4
@@ -29,6 +27,9 @@ jobs:
           role-to-assume: arn:aws:iam::724772070120:role/github-s3
           role-session-name: GitHub_to_AWS_via_FederatedOIDC
           aws-region: ${{ env.AWS_REGION }}
+
+      - run: npm ci
+      - run: npm run build
 
       - name: Sync dist to S3
         run: aws s3 sync ./dist s3://fdo-plugins/ --delete
