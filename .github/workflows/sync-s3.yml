@@ -31,4 +31,4 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Sync dist to S3
-        run: aws s3 sync ./dist s3://your-bucket-name/ --delete
+        run: aws s3 sync ./dist s3://fdo-plugins/ --delete
