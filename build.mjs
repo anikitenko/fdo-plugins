@@ -3,11 +3,20 @@ import fs from "fs/promises";
 import * as path from "node:path";
 import {FDO_SDK} from "@anikitenko/fdo-sdk";
 import {mkdirSync} from "node:fs";
+import yargs from 'yargs/yargs';
 
-const files = ["./src/*.ts"];
 const outDir = "./dist";
 
+const {argv} = yargs().option('file', {
+    description: 'File to build',
+    type: 'string'
+});
+
 async function compilePlugins() {
+    let files = ["./src/*.ts"];
+    if (argv.file) {
+        files = argv.file
+    }
     return await esbuild.build({
         entryPoints: files,
         outdir: outDir,

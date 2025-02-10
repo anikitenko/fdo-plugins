@@ -17,7 +17,8 @@
     "ioredis": "^5.5.0",
     "iovalkey": "^0.3.1",
     "ts-runtime": "^0.3.0",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "yargs": "^17.7.2"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
