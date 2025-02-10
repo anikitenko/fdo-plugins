@@ -8,6 +8,8 @@ on:
 env:
   AWS_REGION: "us-east-1"
   S3_BUCKET: "fdo-plugins"
+  REDIS_HOST: ${{ secrets.REDIS_HOST }}
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 
 permissions:
   id-token: write   # This is required for requesting the JWT
@@ -25,12 +27,11 @@ jobs:
       - name: Set up AWS CLI
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::724772070120:role/github-s3
-          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - run: npm ci
       - run: npm run build
 
       - name: Sync dist to S3
-        run: aws s3 sync ./dist s3://${{ env.S3_BUCKET }}/ --delete
+        run: aws s3 sync ./dist s3://${{ env.S3_BUCKET }}/plugins/

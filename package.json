@@ -6,7 +6,16 @@
   },
   "dependencies": {
     "@anikitenko/fdo-sdk": "^1.0.6",
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/client-memorydb": "^3.744.0",
     "@aws-sdk/client-s3": "^3.744.0",
+    "@aws-sdk/credential-provider-env": "^3.744.0",
+    "@aws-sdk/credential-provider-ini": "^3.744.0",
+    "@aws-sdk/credential-provider-node": "^3.744.0",
+    "@aws-sdk/protocol-http": "^3.370.0",
+    "@aws-sdk/signature-v4": "^3.370.0",
+    "ioredis": "^5.5.0",
+    "iovalkey": "^0.3.1",
     "ts-runtime": "^0.3.0",
     "typescript": "^5.7.3"
   },
