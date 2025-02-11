@@ -38,7 +38,7 @@ phases:
         echo "Changed files:"
         echo "$CHANGED_FILES"
 
-build:
+  build:
     commands:
       - |
         if [ -s changed_files.txt ]; then
