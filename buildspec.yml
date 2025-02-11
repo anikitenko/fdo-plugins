@@ -6,7 +6,7 @@ env:
 phases:
   install:
     runtime-versions:
-      nodejs: 22.x
+      nodejs: 20.x
     commands:
       - npm install --no-audit --no-fund --production --no-package-lock
   pre_build:
@@ -46,9 +46,9 @@ phases:
             if [ ! -z "$i" ]; then
               echo "Processing file: $i"
               if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
-                npm run build -- --file $i --dryrun
+                npm run build -- --file $i --dryrun || exit 1
               elif [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_MERGED" ]; then
-                npm run build -- --file $i
+                npm run build -- --file $i || exit 1
               fi
             fi
           done
