@@ -1,19 +1,21 @@
 version: 0.2
+env:
+  variables:
+    NODE_ENV: "production"
+    CI: "true"
 phases:
   install:
     runtime-versions:
-      nodejs: 23.x
+      nodejs: 20.x
     commands:
-      - npm ci
+      - npm install --no-audit --no-fund --production --no-package-lock
   pre_build:
     commands:
-      # Check if we're in a PR and get changed files
       - |
         if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
           echo "Processing Pull Request"
-          CHANGED_FILES=$(git diff --name-only origin/${CODEBUILD_WEBHOOK_BASE_REF} HEAD | grep '^src/' || true)
-          echo "Changed files in src directory: $CHANGED_FILES"
-          # Store changed files for build phase
+          git fetch origin ${CODEBUILD_WEBHOOK_BASE_REF#refs/heads/}
+          CHANGED_FILES=$(git diff --name-only FETCH_HEAD HEAD | grep '^src/' || true)
           echo "$CHANGED_FILES" > changed_files.txt
         elif [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_MERGED" ]; then
           echo "Processing Merged PR"
@@ -21,28 +23,46 @@ phases:
           echo "$CHANGED_FILES" > changed_files.txt
         else
           echo "Not a PR event, skipping"
+          echo "Event type: $CODEBUILD_WEBHOOK_EVENT"
           exit 0
         fi
+  
+        if [ -z "$CHANGED_FILES" ]; then
+          echo "No changes in src directory, skipping build"
+          exit 0
+        fi
+
+        # Debug information
+        echo "Base ref: $CODEBUILD_WEBHOOK_BASE_REF"
+        echo "Head ref: $CODEBUILD_WEBHOOK_HEAD_REF"
+        echo "Changed files:"
+        echo "$CHANGED_FILES"
+
   build:
     commands:
-      # Custom build script that processes only changed files
       - |
-        if [ -f changed_files.txt ]; then
-          while IFS= read -r file; do
-            if [ ! -z "$file" ]; then
-              # Extract the relative path from src
-              FILE_PATH=${file#src/}
-              # Run build for specific file
-              npm run build -- --file "$file"
-            fi
-          done < changed_files.txt
+        if [ -s changed_files.txt ]; then
+          if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
+            xargs -P 2 -I {} npm run build -- --file {} --dryrun < changed_files.txt
+          elif [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_MERGED" ]; then
+            xargs -P 2 -I {} npm run build -- --file {} < changed_files.txt
+          fi
+        fi
+
+  post_build:
+    commands:
+      - |
+        if [ "$CODEBUILD_WEBHOOK_EVENT" != "PULL_REQUEST_MERGED" ]; then
+          mkdir -p dist
+          touch dist/.placeholder
+          echo "Will not upload artifacts, skipping and exiting successfully"
+          exit 0
         fi
 
 artifacts:
-  base-directory': 'dist'
-  files: ['**/*']
-  when:
-    - CODEBUILD_WEBHOOK_EVENT = "PULL_REQUEST_MERGED"
+  base-directory: dist
+  files:
+    - '**/*'
+  name: '' # This ensures no prefix is added
+  discard-paths: no # Keep the directory structure from dist
 
-cache:
-  paths: ['node_modules/**/*']
