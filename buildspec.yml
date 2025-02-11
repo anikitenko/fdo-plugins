@@ -10,7 +10,7 @@ phases:
     commands:
       - npm install --no-audit --no-fund --production --no-package-lock
       - mkdir -p dist
-      - touch dist/.gitkeep
+      - touch dist/_keep
   pre_build:
     commands:
       - |
