@@ -2,7 +2,7 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      nodejs: 23.x
+      nodejs: 22.x
     commands:
       - npm ci
   pre_build:
