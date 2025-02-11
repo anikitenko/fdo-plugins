@@ -60,6 +60,5 @@ artifacts:
   base-directory: dist
   files:
     - '**/*'
-  name: ''
   discard-paths: no
 
