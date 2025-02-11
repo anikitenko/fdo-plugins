@@ -50,6 +50,14 @@ phases:
           fi
         fi
 
+  post_build:
+    commands:
+      - |
+        if [ "$CODEBUILD_WEBHOOK_EVENT" != "PULL_REQUEST_MERGED" ]; then
+          echo "Will not upload artifacts, skipping exiting successfully"
+          exit 0
+        fi
+
 artifacts:
   base-directory: dist
   files:
