@@ -5,7 +5,7 @@ class MyPlugin extends FDO_SDK implements FDOInterface {
         name: "MyPlugin",
         version: "1.0.0",
         author: "AleXvWaN",
-        description: "A sample plugin",
+        description: "A sample plugin for FDO",
         icon: "COG",
     };
 
