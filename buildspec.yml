@@ -42,22 +42,17 @@ phases:
     commands:
       - |
         if [ -s changed_files.txt ]; then
-          cat changed_files.txt | while read i; do
-            if [ ! -z "$i" ]; then
-              echo "Processing file: $i"
-              if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
-                npm run build -- --file $i --dryrun || exit 1
-              elif [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_MERGED" ]; then
-                npm run build -- --file $i || exit 1
-              fi
-            fi
-          done
+          if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
+            xargs -P 2 -I {} npm run build -- --file {} --dryrun < changed_files.txt
+          elif [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_MERGED" ]; then
+            xargs -P 2 -I {} npm run build -- --file {} < changed_files.txt
+          fi
         fi
 
 artifacts:
-  base-directory: 'dist'
+  base-directory: dist
   files:
     - '**/*'
   name: '' # This ensures no prefix is added
-  discard-paths: false # Keep the directory structure from dist
+  discard-paths: no # Keep the directory structure from dist
 
