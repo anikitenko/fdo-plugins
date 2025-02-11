@@ -4,28 +4,29 @@ import * as path from "node:path";
 import {FDO_SDK} from "@anikitenko/fdo-sdk";
 import {mkdirSync} from "node:fs";
 import yargs from 'yargs/yargs';
+import { hideBin } from 'yargs/helpers';
 
 let outDir = "./dist";
+let files = ["./src/*.ts"];
 
-const {argv} = yargs().option('file', {
+const argv = yargs(hideBin(process.argv)).option('file', {
     description: 'File to build',
-    type: 'string'
+    type: 'array',
+    default: files
 }).option('dryrun', {
     description: 'Is dry-run?',
-    type: 'boolean'
-});
+    type: 'boolean',
+    default: false,
+    boolean: true
+}).parse();
 
 async function compilePlugins() {
-    let files = ["./src/*.ts"];
     if (argv.file) {
         files = argv.file
     }
     if (argv.dryrun) {
         outDir = "./dryrun"
     }
-    console.log("argv: "+argv);
-    console.log("argv.file: "+argv.file);
-    console.log("argv.dryrun: "+argv.dryrun);
 
     return await esbuild.build({
         entryPoints: files,
@@ -83,7 +84,7 @@ async function extractMetadata() {
 
 try {
     // Remove output directory
-    await fs.rm(outDir, { recursive: true, force: true });
+    await fs.rm("./dist", { recursive: true, force: true });
 
     // Compile plugins
     const result = await compilePlugins();
