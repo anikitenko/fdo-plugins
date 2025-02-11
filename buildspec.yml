@@ -51,6 +51,7 @@ phases:
                 npm run build -- --file $i
               fi
             fi
+          done
         fi
 
 artifacts:
