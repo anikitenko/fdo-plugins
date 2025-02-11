@@ -23,6 +23,8 @@ async function compilePlugins() {
     if (argv.dryrun) {
         outDir = "./dryrun"
     }
+
+    console.log(files);
     return await esbuild.build({
         entryPoints: files,
         outdir: outDir,
