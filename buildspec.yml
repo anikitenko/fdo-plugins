@@ -49,6 +49,15 @@ phases:
           fi
         fi
 
+  post_build:
+    commands:
+      - echo "Starting post-build phase..."
+      - echo "Checking dist directory contents:"
+      - ls -la dist || echo "dist directory not found or empty"
+      - echo "Current directory structure:"
+      - tree || ls -R
+      - echo "Completed post-build phase"
+
 artifacts:
   base-directory: dist
   files:
