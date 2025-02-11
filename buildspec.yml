@@ -9,8 +9,6 @@ phases:
       nodejs: 20.x
     commands:
       - npm install --no-audit --no-fund --production --no-package-lock
-      - mkdir -p dist
-      - touch dist/_keep
   pre_build:
     commands:
       - |
@@ -42,6 +40,7 @@ phases:
 
   build:
     commands:
+      - mkdir -p dist
       - |
         if [ -s changed_files.txt ]; then
           if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
