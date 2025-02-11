@@ -38,10 +38,6 @@ phases:
         echo "Head ref: $CODEBUILD_WEBHOOK_HEAD_REF"
         echo "Changed files:"
         echo "$CHANGED_FILES"
-
-  build:
-    commands:
-      - |
         if [ -s changed_files.txt ]; then
           if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
             xargs -P 2 -I {} npm run build -- --file {} --dryrun < changed_files.txt
@@ -49,12 +45,8 @@ phases:
             xargs -P 2 -I {} npm run build -- --file {} < changed_files.txt
           fi
         fi
-
-  post_build:
-    commands:
-      - |
         if [ "$CODEBUILD_WEBHOOK_EVENT" != "PULL_REQUEST_MERGED" ]; then
-          echo "Will not upload artifacts, skipping exiting successfully"
+          echo "Will not upload artifacts, skipping and exiting successfully"
           exit 0
         fi
 
