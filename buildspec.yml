@@ -1,8 +1,7 @@
 version: 0.2
 env:
   variables:
-    NODE_ENV: "production"
-    CI: "true"
+    AWS_SDK_JS_SUPPRESS_MAINTENANCE_MODE_MESSAGE: "1"
 phases:
   install:
     runtime-versions:
@@ -11,6 +10,13 @@ phases:
       - npm install --no-audit --no-fund --production --no-package-lock
   pre_build:
     commands:
+      # Enable debug logging for AWS SDK
+      - export AWS_LOGGER=debug
+      - export AWS_LOG_LEVEL=debug
+      - export AWS_SDK_DEBUG=true
+      # For even more verbose S3 specific logging
+      - export AWS_DEBUG=true
+      - export DEBUG=*
       - |
         if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
           echo "Processing Pull Request"
