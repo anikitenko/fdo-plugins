@@ -9,6 +9,7 @@ phases:
       nodejs: 20.x
     commands:
       - npm install --no-audit --no-fund --production --no-package-lock
+      - mkdir -p dist
   pre_build:
     commands:
       - |
@@ -48,15 +49,6 @@ phases:
             xargs -P 2 -I {} npm run build -- --file {} < changed_files.txt
           fi
         fi
-
-  post_build:
-    commands:
-      - echo "Starting post-build phase..."
-      - echo "Checking dist directory contents:"
-      - ls -la dist || echo "dist directory not found or empty"
-      - echo "Current directory structure:"
-      - tree || ls -R
-      - echo "Completed post-build phase"
 
 artifacts:
   base-directory: dist
