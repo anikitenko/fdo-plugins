@@ -56,6 +56,7 @@ async function extractMetadata() {
                     const pluginInstance = new PluginClass();
                     const pluginName = FDO_SDK.generatePluginName(file.replace(".js", ""));
                     const newPath = path.join(path.resolve(outDir), pluginName, pluginInstance.metadata.version)
+                    console.log(pluginInstance.metadata);
                     mkdirSync(newPath, {recursive: true});
                     await fs.rename(filePath, path.join(newPath, pluginName + ".js"));
                 }).catch(err => {
