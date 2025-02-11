@@ -23,6 +23,7 @@ async function compilePlugins() {
     if (argv.dryrun) {
         outDir = "./dryrun"
     }
+    console.log("argv: "+argv);
     console.log("argv.file: "+argv.file);
     console.log("argv.dryrun: "+argv.dryrun);
 
