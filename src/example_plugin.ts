@@ -4,7 +4,7 @@ class MyPlugin extends FDO_SDK implements FDOInterface {
     private readonly _metadata: PluginMetadata = {
         name: "MyPlugin",
         version: "1.0.0",
-        author: "Oleksandr Nykytenko",
+        author: "AleXvWaN",
         description: "A sample plugin for FDO",
         icon: "COG",
     };
