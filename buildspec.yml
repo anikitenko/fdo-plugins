@@ -65,6 +65,6 @@ artifacts:
   base-directory: dist
   files:
     - '**/*'
-  name: '' # This ensures no prefix is added
-  discard-paths: no # Keep the directory structure from dist
+  name: ''
+  discard-paths: no
 
