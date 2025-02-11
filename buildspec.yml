@@ -51,6 +51,4 @@ artifacts:
     - '**/*'
   name: '' # This ensures no prefix is added
   discard-paths: false # Keep the directory structure from dist
-  when:
-    - CODEBUILD_WEBHOOK_EVENT = "PULL_REQUEST_MERGED"
 

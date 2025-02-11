@@ -8,9 +8,7 @@
     "@anikitenko/fdo-sdk": "^1.0.6",
     "ts-runtime": "^0.3.0",
     "typescript": "^5.7.3",
-    "yargs": "^17.7.2"
-  },
-  "devDependencies": {
+    "yargs": "^17.7.2",
     "esbuild": "^0.25.0"
   }
 }
