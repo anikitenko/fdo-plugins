@@ -1,7 +1,4 @@
 version: 0.2
-env:
-  variables:
-    AWS_SDK_JS_SUPPRESS_MAINTENANCE_MODE_MESSAGE: "1"
 phases:
   install:
     runtime-versions:
@@ -10,13 +7,6 @@ phases:
       - npm install --no-audit --no-fund --production --no-package-lock
   pre_build:
     commands:
-      # Enable debug logging for AWS SDK
-      - export AWS_LOGGER=debug
-      - export AWS_LOG_LEVEL=debug
-      - export AWS_SDK_DEBUG=true
-      # For even more verbose S3 specific logging
-      - export AWS_DEBUG=true
-      - export DEBUG=*
       - |
         if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
           echo "Processing Pull Request"
@@ -62,7 +52,6 @@ phases:
       - |
         if [ "$CODEBUILD_WEBHOOK_EVENT" != "PULL_REQUEST_MERGED" ]; then
           mkdir -p dist
-          touch dist/.placeholder
           echo "Will not upload artifacts, skipping and exiting successfully"
           exit 0
         fi
