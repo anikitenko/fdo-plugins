@@ -42,7 +42,15 @@ phases:
     commands:
       - |
         if [ -s changed_files.txt ]; then
-          xargs -P 2 -I {} npm run build -- --file {} < changed_files.txt
+          cat changed_files.txt | while read i; do
+            if [ ! -z "$i" ]; then
+              echo "Processing file: $i"
+              if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then
+                npm run build -- --file $i --dryrun
+              elif [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_MERGED" ]; then
+                npm run build -- --file $i
+              fi
+            fi
         fi
 
 artifacts:

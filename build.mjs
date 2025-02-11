@@ -5,17 +5,23 @@ import {FDO_SDK} from "@anikitenko/fdo-sdk";
 import {mkdirSync} from "node:fs";
 import yargs from 'yargs/yargs';
 
-const outDir = "./dist";
+let outDir = "./dist";
 
 const {argv} = yargs().option('file', {
     description: 'File to build',
     type: 'string'
+}).option('dryrun', {
+    description: 'Is dry-run?',
+    type: 'boolean'
 });
 
 async function compilePlugins() {
     let files = ["./src/*.ts"];
     if (argv.file) {
         files = argv.file
+    }
+    if (argv.dryrun) {
+        outDir = "./dryrun"
     }
     return await esbuild.build({
         entryPoints: files,
