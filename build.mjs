@@ -31,7 +31,9 @@ async function compilePlugins() {
         files = files.filter(file => fs.existsSync(file));
         if (files.length === 0) {
             console.log("No files to build");
-            return
+            return {
+                errors: []
+            }
         }
     }
     if (argv.dryrun) {
@@ -71,7 +73,7 @@ async function compilePlugins() {
 
 async function extractMetadataAndPushS3() {
     try {
-        fs.readdir(dir, function(err, files) {
+        fs.readdir(outDir, function(err, files) {
             if (err) return done(err);
             files = files.filter(fn => fn.endsWith('.js'));
             for (const file of files) {
@@ -126,10 +128,8 @@ try {
 
     // Compile plugins
     const result = await compilePlugins();
-    if (result) {
-        if (result.errors.length > 0) {
-            process.exit(1);
-        }
+    if (result.errors.length > 0) {
+        process.exit(1);
     }
     console.log(result);
 
