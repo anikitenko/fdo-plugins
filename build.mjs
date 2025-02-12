@@ -1,5 +1,5 @@
 import esbuild from "esbuild";
-import fs from "fs/promises";
+import fs from "fs";
 import * as path from "node:path";
 import {FDO_SDK} from "@anikitenko/fdo-sdk";
 import yargs from 'yargs/yargs';
@@ -50,16 +50,19 @@ async function compilePlugins() {
         plugins: [{
             name: "remove-extends-super", setup(build) {
                 build.onLoad({filter: /\.ts$/}, async (args) => {
-                    let source = await fs.readFile(args.path, "utf8");
-
-                    // Remove `extends FDO_SDK`, `super();`, and `import` statements
-                    source = source.replace(/extends\s+\w+\s?/g, "");
-                    source = source.replace(/super\(\);/g, "");
-                    source = source.replace(/import\s.*?;?\n/g, "");
-
-                    return {
-                        contents: source, loader: "ts"
-                    };
+                    fs.readFile(args.path, {encoding: 'utf-8'}, function(err,data){
+                        if (!err) {
+                            // Remove `extends FDO_SDK`, `super();`, and `import` statements
+                            data = data.replace(/extends\s+\w+\s?/g, "");
+                            data = data.replace(/super\(\);/g, "");
+                            data = data.replace(/import\s.*?;?\n/g, "");
+                            return {
+                                contents: data, loader: "ts"
+                            };
+                        } else {
+                            console.log(err);
+                        }
+                    });
                 });
             }
         }]
