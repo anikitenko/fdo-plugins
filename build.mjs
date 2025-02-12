@@ -78,7 +78,7 @@ async function extractMetadataAndPushS3() {
             files = files.filter(fn => fn.endsWith('.js'));
             for (const file of files) {
                 const filePath = path.join(path.resolve(outDir), file);
-                import(filePath).then(async plugin => {
+                import(filePath).then(plugin => {
                     const PluginClass = plugin.default;
                     const pluginInstance = new PluginClass();
                     const pluginName = FDO_SDK.generatePluginName(file.replace(".js", ""));
@@ -87,16 +87,19 @@ async function extractMetadataAndPushS3() {
                     console.log("Plugin version: " + pluginVersion);
                     if (webHook === "PULL_REQUEST_MERGED") {
                         try {
-                            const command = new PutObjectCommand({
-                                Bucket: "fdo-plugins",
-                                Key: pluginName + "/" + pluginVersion + "/" + pluginName + ".js",
-                                Body: await fs.readFile(filePath),
-                                ContentType: "application/javascript",
-                                IfNoneMatch: "*"
-                            });
-                            const response = await s3Client.send(command);
-                            console.log('Upload successful');
-                            return response;
+                            fs.readFile(filePath, {encoding: 'utf-8'}, async function (err, data) {
+                                if (err) throw err;
+                                const command = new PutObjectCommand({
+                                    Bucket: "fdo-plugins",
+                                    Key: pluginName + "/" + pluginVersion + "/" + pluginName + ".js",
+                                    Body: data,
+                                    ContentType: "application/javascript",
+                                    IfNoneMatch: "*"
+                                });
+                                const response = await s3Client.send(command);
+                                console.log('Upload successful');
+                                return response;
+                            })
                         } catch (error) {
                             if (error.name === 'PreconditionFailed') {
                                 console.log('Object already exists at this location');
