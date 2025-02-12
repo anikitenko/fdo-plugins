@@ -126,7 +126,7 @@ try {
 
     // Compile plugins
     const result = await compilePlugins();
-    if (result.errors) {
+    if (result) {
         if (result.errors.length > 0) {
             process.exit(1);
         }
