@@ -8,13 +8,19 @@ import {
     PutObjectCommand, S3Client,
 } from "@aws-sdk/client-s3";
 
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import * as glob from 'glob';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 let outDir = "./dist";
-let files = ["./src/*.ts"];
 
 const argv = yargs(hideBin(process.argv)).option('file', {
     description: 'File to build',
     type: 'array',
-    default: files
+    default: ["./src/*.ts"]
 }).option('dryrun', {
     description: 'Is dry-run?',
     type: 'boolean',
@@ -24,24 +30,39 @@ const argv = yargs(hideBin(process.argv)).option('file', {
 const webHook = process.env.CODEBUILD_WEBHOOK_EVENT
 const s3Client = new S3Client({ region: process.env.AWS_REGION });
 
-async function compilePlugins() {
-    if (argv.file) {
-        files = argv.file
-        // If file not exist then just skip it
-        files = files.filter(file => fs.existsSync(file));
-        if (files.length === 0) {
-            console.log("No files to build");
-            return {
-                errors: []
+const checkFiles = (patterns) => {
+    const existingFiles = [];
+
+    for (const pattern of patterns) {
+        if (pattern.includes('*')) {
+            // Handle glob pattern
+            const matches = glob.sync(pattern, {
+                cwd: path.resolve(__dirname)
+            });
+            existingFiles.push(...matches);
+        } else {
+            // Handle regular file
+            const fullPath = path.join(path.resolve(__dirname), pattern);
+            if (fs.existsSync(fullPath)) {
+                existingFiles.push(pattern);
             }
         }
+    }
+
+    return existingFiles;
+};
+
+async function compilePlugins() {
+    if (checkFiles(argv.file).length === 0) {
+        console.log("Skipping " + argv.file);
+        return {skip: true}
     }
     if (argv.dryrun) {
         outDir = "./dryrun"
     }
 
     return await esbuild.build({
-        entryPoints: files,
+        entryPoints: argv.file,
         outdir: outDir,
         bundle: true,
         format: "esm",
@@ -52,19 +73,16 @@ async function compilePlugins() {
         plugins: [{
             name: "remove-extends-super", setup(build) {
                 build.onLoad({filter: /\.ts$/}, async (args) => {
-                    fs.readFile(args.path, {encoding: 'utf-8'}, function(err,data){
-                        if (!err) {
-                            // Remove `extends FDO_SDK`, `super();`, and `import` statements
-                            data = data.replace(/extends\s+\w+\s?/g, "");
-                            data = data.replace(/super\(\);/g, "");
-                            data = data.replace(/import\s.*?;?\n/g, "");
-                            return {
-                                contents: data, loader: "ts"
-                            };
-                        } else {
-                            console.log(err);
-                        }
-                    });
+                    let source = await fs.promises.readFile(args.path, { encoding: 'utf-8' });
+
+                    // Remove `extends FDO_SDK`, `super();`, and `import` statements
+                    source = source.replace(/extends\s+\w+\s?/g, "");
+                    source = source.replace(/super\(\);/g, "");
+                    source = source.replace(/import\s.*?;?\n/g, "");
+
+                    return {
+                        contents: source, loader: "ts"
+                    };
                 });
             }
         }]
@@ -120,21 +138,29 @@ async function extractMetadataAndPushS3() {
             }
         });
     } catch (err) {
-        console.log(err);
+        console.log("Problem with reading output directory: "+err);
         process.exit(1);
     }
 }
 
 try {
     // Remove output directory
-    await fs.rm("./dist", { recursive: true, force: true });
+    await fs.promises.rm("./dist", { recursive: true, force: true });
 
-    // Compile plugins
-    const result = await compilePlugins();
-    if (result.errors.length > 0) {
+    try {
+        const result = await compilePlugins();
+        if (result.skip) {
+            process.exit(0);
+        }
+        if (result.errors && result.errors.length > 0) {
+            console.error('Build errors:', result.errors);
+            process.exit(1);
+        }
+        console.log(result);
+    } catch (error) {
+        console.error('Compilation failed:', error);
         process.exit(1);
     }
-    console.log(result);
 
     // Extract metadata
     await extractMetadataAndPushS3();
