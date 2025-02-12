@@ -31,7 +31,7 @@ async function compilePlugins() {
         files = files.filter(file => fs.existsSync(file));
         if (files.length === 0) {
             console.log("No files to build");
-            return{errors: []};
+            return
         }
     }
     if (argv.dryrun) {
@@ -125,8 +125,10 @@ try {
 
     // Compile plugins
     const result = await compilePlugins();
-    if (result.errors.length > 0) {
-        process.exit(1);
+    if (result.errors) {
+        if (result.errors.length > 0) {
+            process.exit(1);
+        }
     }
     console.log(result);
 
