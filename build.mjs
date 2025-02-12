@@ -27,6 +27,12 @@ const s3Client = new S3Client({ region: process.env.AWS_REGION });
 async function compilePlugins() {
     if (argv.file) {
         files = argv.file
+        // If file not exist then just skip it
+        files = files.filter(file => fs.existsSync(file));
+        if (files.length === 0) {
+            console.log("No files to build");
+            return;
+        }
     }
     if (argv.dryrun) {
         outDir = "./dryrun"
