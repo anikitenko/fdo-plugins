@@ -82,7 +82,6 @@ async function extractMetadataAndPushS3() {
                                 ContentType: "application/javascript",
                                 IfNoneMatch: "*"
                             });
-                            console.log(command);
                             const response = await s3Client.send(command);
                             console.log('Upload successful');
                             return response;
