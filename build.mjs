@@ -31,7 +31,7 @@ async function compilePlugins() {
         files = files.filter(file => fs.existsSync(file));
         if (files.length === 0) {
             console.log("No files to build");
-            return;
+            return{errors: []};
         }
     }
     if (argv.dryrun) {
