@@ -74,7 +74,7 @@ async function compilePlugins() {
 async function extractMetadataAndPushS3() {
     try {
         fs.readdir(outDir, function(err, files) {
-            if (err) return done(err);
+            if (err) return {errors: [err]};
             files = files.filter(fn => fn.endsWith('.js'));
             for (const file of files) {
                 const filePath = path.join(path.resolve(outDir), file);
