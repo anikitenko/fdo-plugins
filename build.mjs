@@ -2,9 +2,11 @@ import esbuild from "esbuild";
 import fs from "fs/promises";
 import * as path from "node:path";
 import {FDO_SDK} from "@anikitenko/fdo-sdk";
-import {mkdirSync} from "node:fs";
 import yargs from 'yargs/yargs';
 import { hideBin } from 'yargs/helpers';
+import {
+    PutObjectCommand, S3Client,
+} from "@aws-sdk/client-s3";
 
 let outDir = "./dist";
 let files = ["./src/*.ts"];
@@ -19,6 +21,8 @@ const argv = yargs(hideBin(process.argv)).option('file', {
     default: false,
     boolean: true
 }).parse();
+const webHook = process.env.CODEBUILD_WEBHOOK_EVENT
+const s3Client = new S3Client({ region: process.env.AWS_REGION });
 
 async function compilePlugins() {
     if (argv.file) {
@@ -56,7 +60,7 @@ async function compilePlugins() {
     })
 }
 
-async function extractMetadata() {
+async function extractMetadataAndPushS3() {
     try {
         await fs.readdir(outDir).then(async (files) => {
             files = files.filter(fn => fn.endsWith('.js'));
@@ -66,10 +70,35 @@ async function extractMetadata() {
                     const PluginClass = plugin.default;
                     const pluginInstance = new PluginClass();
                     const pluginName = FDO_SDK.generatePluginName(file.replace(".js", ""));
-                    const newPath = path.join(path.resolve(outDir), pluginName, pluginInstance.metadata.version)
-                    console.log(pluginInstance.metadata);
-                    mkdirSync(newPath, {recursive: true});
-                    await fs.rename(filePath, path.join(newPath, pluginName + ".js"));
+                    const pluginVersion = pluginInstance.metadata.version;
+                    console.log("Plugin name: " + pluginName);
+                    console.log("Plugin version: " + pluginVersion);
+                    if (webHook === "PULL_REQUEST_MERGED") {
+                        try {
+                            const command = new PutObjectCommand({
+                                Bucket: "fdo-plugins",
+                                Key: pluginName + "/" + pluginVersion + "/" + pluginName + ".js",
+                                Body: await fs.readFile(filePath),
+                                ContentType: "application/javascript",
+                                IfNoneMatch: "*"
+                            });
+                            console.log(command);
+                            const response = await s3Client.send(command);
+                            console.log('Upload successful');
+                            return response;
+                        } catch (error) {
+                            if (error.name === 'PreconditionFailed') {
+                                console.log('Object already exists at this location');
+                                // Handle the case where the object already exists
+                            } else {
+                                // Handle other types of errors
+                                console.error('Upload failed:', error);
+                                throw error;
+                            }
+                        }
+                    } else {
+                        console.log("Skipping push to S3");
+                    }
                 }).catch(err => {
                     console.log(err);
                     process.exit(1);
@@ -94,7 +123,7 @@ try {
     console.log(result);
 
     // Extract metadata
-    await extractMetadata();
+    await extractMetadataAndPushS3();
 } catch (err) {
     console.error("Error:", err);
     process.exit(1);
