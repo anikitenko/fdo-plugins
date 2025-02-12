@@ -71,11 +71,12 @@ async function compilePlugins() {
 
 async function extractMetadataAndPushS3() {
     try {
-        await fs.readdir(outDir).then(async (files) => {
+        fs.readdir(dir, function(err, files) {
+            if (err) return done(err);
             files = files.filter(fn => fn.endsWith('.js'));
             for (const file of files) {
                 const filePath = path.join(path.resolve(outDir), file);
-                await import(filePath).then(async plugin => {
+                import(filePath).then(async plugin => {
                     const PluginClass = plugin.default;
                     const pluginInstance = new PluginClass();
                     const pluginName = FDO_SDK.generatePluginName(file.replace(".js", ""));
