@@ -1,0 +1,30 @@
+name: PR Changed Files Check
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'src/**'
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Fetch last 2 commits for comparison
+
+      - name: Identify changed files
+        run: |
+          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD | grep '^src/' || true)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No changes detected in src/, failing check."
+            exit 1
+          fi
+          echo "$CHANGED_FILES" > changed_files.txt
+
+      - name: Cache changed files (GitHub Cache)
+        uses: actions/cache@v4
+        with:
+          path: changed_files.txt
+          key: changed-files-${{ github.event.pull_request.number }}
