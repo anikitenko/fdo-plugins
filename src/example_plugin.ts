@@ -3,9 +3,9 @@ import {FDO_SDK, FDOInterface, PluginMetadata} from '@anikitenko/fdo-sdk';
 class MyPlugin extends FDO_SDK implements FDOInterface {
     private readonly _metadata: PluginMetadata = {
         name: "MyPlugin",
-        version: "1.0.0",
+        version: "1.0.1",
         author: "AleXvWaN",
-        description: "A test FDO plugin",
+        description: "A sample FDO plugin",
         icon: "COG",
     };
 
