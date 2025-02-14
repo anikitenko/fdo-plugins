@@ -22,14 +22,7 @@ class MyPlugin extends FDO_SDK implements FDOInterface {
     }
 
     public render(): string {
-        return(
-            `
-            <>
-                <h1>MyPlugin</h1>
-                <p>MyPlugin is a sample FDO plugin</p>
-            </>
-            `
-        )
+        return  "MyPlugin is a sample FDO plugin"
     }
 }
 
