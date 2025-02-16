@@ -37,6 +37,7 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-S3
 
       - run: npm ci
       - run:
