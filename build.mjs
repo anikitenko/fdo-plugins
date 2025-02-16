@@ -21,13 +21,16 @@ const argv = yargs(hideBin(process.argv)).option('file', {
     description: 'File to build',
     type: 'array',
     default: ["./src/*.ts"]
+}).option('event', {
+    description: 'Event name',
+    type: 'string',
+    default: 'test',
 }).option('dryrun', {
     description: 'Is dry-run?',
     type: 'boolean',
     default: false,
     boolean: true
 }).parse();
-const webHook = process.env.CODEBUILD_WEBHOOK_EVENT
 const s3Client = new S3Client({ region: process.env.AWS_REGION });
 
 const checkFiles = (patterns) => {
@@ -103,7 +106,7 @@ async function extractMetadataAndPushS3() {
                     const pluginVersion = pluginInstance.metadata.version;
                     console.log("Plugin name: " + pluginName);
                     console.log("Plugin version: " + pluginVersion);
-                    if (webHook === "PULL_REQUEST_MERGED") {
+                    if (argv.event === "push") {
                         try {
                             fs.readFile(filePath, {encoding: 'utf-8'}, async function (err, data) {
                                 if (err) throw err;
