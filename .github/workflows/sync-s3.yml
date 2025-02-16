@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - main
+  pull_request:
 
 env:
   AWS_REGION: "us-east-1"
   S3_BUCKET: "fdo-plugins"
-  REDIS_HOST: ${{ secrets.REDIS_HOST }}
   AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 
 permissions:
@@ -24,14 +24,26 @@ jobs:
         with:
           node-version: 23
 
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            src:
+              - 'src/**'
+          list-files: 'shell'
+
       - name: Set up AWS CLI
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-S3
 
       - run: npm ci
-      - run: npm run build
-
-      - name: Sync dist to S3
-        run: aws s3 sync ./dist s3://${{ env.S3_BUCKET }}/plugins/
+      - run:
+          |
+          if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            npm run build -- --event push --file ${SRC}_files
+          else
+            npm run build --file ${SRC}_files
+          fi
