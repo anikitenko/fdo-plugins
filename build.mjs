@@ -60,12 +60,13 @@ async function compilePlugins() {
         console.log("Skipping " + argv.file);
         return {skip: true}
     }
+    const filesToProcess = checkFiles(argv.file);
     if (argv.dryrun) {
         outDir = "./dryrun"
     }
 
     return await esbuild.build({
-        entryPoints: argv.file,
+        entryPoints: filesToProcess,
         outdir: outDir,
         bundle: true,
         format: "esm",
