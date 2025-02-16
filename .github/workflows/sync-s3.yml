@@ -33,6 +33,7 @@ jobs:
           list-files: 'shell'
 
       - name: Set up AWS CLI
+        if: github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
@@ -43,7 +44,7 @@ jobs:
       - run:
           |
           if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref }}" == "refs/heads/main" ]; then
-            npm run build -- --event push --file ${SRC}_files
+            npm run build -- --event push --file ${{ steps.changes.outputs.src_files }}
           else
-            npm run build --file ${SRC}_files
+            npm run build --file ${{ steps.changes.outputs.src_files }}
           fi
