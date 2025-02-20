@@ -68,9 +68,10 @@ async function compilePlugins() {
     return await esbuild.build({
         entryPoints: filesToProcess,
         outdir: outDir,
+        outExtension: { '.js': '.mjs' },
         bundle: true,
         format: "esm",
-        minify: false,
+        minify: true,
         treeShaking: true,
         platform: "node",
         sourcesContent: false,
@@ -80,9 +81,9 @@ async function compilePlugins() {
                     let source = await fs.promises.readFile(args.path, { encoding: 'utf-8' });
 
                     // Remove `extends FDO_SDK`, `super();`, and `import` statements
-                    source = source.replace(/extends\s+\w+\s?/g, "");
-                    source = source.replace(/super\(\);/g, "");
-                    source = source.replace(/import\s.*?;?\n/g, "");
+                    //source = source.replace(/extends\s+\w+\s?/g, "");
+                    //source = source.replace(/super\(\);/g, "");
+                    //source = source.replace(/import\s.*?;?\n/g, "");
 
                     return {
                         contents: source, loader: "ts"
@@ -97,13 +98,13 @@ async function extractMetadataAndPushS3() {
     try {
         fs.readdir(outDir, function(err, files) {
             if (err) return {errors: [err]};
-            files = files.filter(fn => fn.endsWith('.js'));
+            files = files.filter(fn => fn.endsWith('.mjs'));
             for (const file of files) {
                 const filePath = path.join(path.resolve(outDir), file);
                 import(filePath).then(plugin => {
                     const PluginClass = plugin.default;
                     const pluginInstance = new PluginClass();
-                    const pluginName = FDO_SDK.generatePluginName(file.replace(".js", ""));
+                    const pluginName = FDO_SDK.generatePluginName(file.replace(".mjs", ""));
                     const pluginVersion = pluginInstance.metadata.version;
                     console.log("Plugin name: " + pluginName);
                     console.log("Plugin version: " + pluginVersion);
@@ -113,7 +114,7 @@ async function extractMetadataAndPushS3() {
                                 if (err) throw err;
                                 const command = new PutObjectCommand({
                                     Bucket: "fdo-plugins",
-                                    Key: pluginName + "/" + pluginVersion + "/" + pluginName + ".js",
+                                    Key: pluginName + "/" + pluginVersion + "/" + pluginName + ".mjs",
                                     Body: data,
                                     ContentType: "application/javascript",
                                     IfNoneMatch: "*"

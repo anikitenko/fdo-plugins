@@ -5,7 +5,7 @@
     "build": "node build.mjs"
   },
   "dependencies": {
-    "@anikitenko/fdo-sdk": "^1.0.6",
+    "@anikitenko/fdo-sdk": "^1.0.10",
     "@aws-sdk/client-s3": "^3.744.0",
     "esbuild": "^0.25.0",
     "glob": "^11.0.1",
