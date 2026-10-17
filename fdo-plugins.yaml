@@ -8,6 +8,7 @@ metadata:
   version: 1.0.0
   maintainers:
     - github: anikitenko
+    - github: actions
 
 spec:
   plugins:
