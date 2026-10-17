@@ -1,0 +1,25 @@
+{
+  "name": "rose-calculator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local arithmetic with quick actions, session history and rose themes.",
+  "main": "index.ts",
+  "scripts": {
+    "test": "tsx --test render.test.ts tests/acceptance.test.ts",
+    "test:acceptance": "tsx --test tests/acceptance.test.ts",
+    "test:render": "tsx --test render.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anikitenko/fdo-sdk": "*"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^22.0.0",
+    "jsdom": "^26.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

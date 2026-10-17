@@ -1,0 +1,17 @@
+apiVersion: fdo.dev/v1alpha1
+kind: PluginCollection
+
+metadata:
+  name: alexvwan-devops
+  displayName: AleXvWaN DevOps Toolkit
+  description: Essential AleXvWaN DevOps plugins
+  version: 1.0.0
+  maintainers:
+    - github: anikitenko
+
+spec:
+  plugins:
+    - name: cute-calculator
+      repository: https://github.com/anikitenko/fdo-plugins
+      targetRevision: v1.0.0
+      path: /cute-calculator
