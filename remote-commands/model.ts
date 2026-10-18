@@ -58,8 +58,11 @@ export function validateState(input: unknown): VMState {
   return {version: 1, selectedBatch: data.selectedBatch, batches, saved, timeout: data.timeout, captureBytes, stopOnError: data.stopOnError, values};
 }
 
-export function serviceMessage(error: unknown, context?: 'batch' | 'terminal' | 'status'): string {
+export function serviceMessage(error: unknown, context?: 'batch' | 'terminal' | 'status', evidence?: {terminalOnlyVerified: boolean}): string {
   const code = (error as {code?: string})?.code;
+  if (code === 'X11_FORWARDING_DENIED' && context === 'terminal' && evidence?.terminalOnlyVerified) {
+    return 'The remote server rejected X11 forwarding. This profile works with X11 off, and local X11 checks passed. Ask the remote server administrator to check X11 forwarding permissions, xauth, and account or SSH-key restrictions (including no-X11-forwarding or restrict). No mode fallback or automatic retry occurred.';
+  }
   if (code === 'ACCESS_DENIED' && context) {
     const policy = context === 'terminal'
       ? 'Enable Interactive terminal access for this plugin’s selected VM in Settings → Credentials & SSH. The ssh.use, ssh.terminal.open, secrets.use and secrets.consume grants and profile interactive consent are all required. If X11 is selected, its grant and exact-mode profile consent are also required.'

@@ -4,11 +4,15 @@ import {createBatchProgress} from './batch-progress.ts';
 
 type Entry = {id: string; viewId: string; profileId: string; mode: 'off' | 'trusted' | 'untrusted'; touched: number; controller: AbortController; session?: SSHTerminalSession;
   batch?: ReturnType<typeof createBatchProgress>; nextSequence: number; packet?: SSHTerminalOutput; acknowledge?: () => void; done: boolean; released: boolean; result?: SSHTerminalResult;
-  error?: {code: string; message: string}; cancellation?: SSHCancelResult; initializing: boolean; cancelRequested: boolean; cancelTask?: Promise<void>};
+  error?: {code: string; message: string}; cancellation?: SSHCancelResult; initializing: boolean; cancelRequested: boolean; cancelTask?: Promise<void>; terminalOnlyVerified?: boolean};
 
 /** One held packet per view: only renderer consumption allows another SDK read. No transcript. */
 export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, authorize: (id: string) => Promise<unknown>) {
   const entries = new Map<string, Entry>();
+  // Diagnostic evidence only: no retries, policy changes or persistent profile data.
+  const terminalOnly = new Map<string, {signature: string; expires: number}>();
+  const signature = (profileId: string, profile: unknown) => JSON.stringify([profileId,
+    ...['host', 'port', 'username', 'authenticationType', 'trustedHostKey'].map(key => (profile as Record<string, unknown>)[key])]);
   const data = (input: unknown): Record<string, unknown> => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid terminal request.');
     return input as Record<string, unknown>;
@@ -19,7 +23,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
   };
   const fail = (entry: Entry, error: unknown) => {
     const code = (error as {code?: string})?.code ?? 'UNAVAILABLE';
-    entry.error = {code, message: serviceMessage({code}, 'terminal') + (code === 'ACCESS_DENIED' ? ` Requested X11 mode: ${entry.mode}. ${entry.mode === 'off' ? 'X11 authorization is not used by this request.' : 'Trusted and untrusted mode consents are distinct; an X11 capability grant alone does not authorize this VM/mode.'}` : code === 'X11_FORWARDING_DENIED' ? ` Requested X11 mode: ${entry.mode}.` : '')};
+    entry.error = {code, message: serviceMessage({code}, 'terminal', {terminalOnlyVerified: !!entry.terminalOnlyVerified && !entry.session && entry.mode !== 'off'}) + (code === 'ACCESS_DENIED' ? ` Requested X11 mode: ${entry.mode}. ${entry.mode === 'off' ? 'X11 authorization is not used by this request.' : 'Trusted and untrusted mode consents are distinct; an X11 capability grant alone does not authorize this VM/mode.'}` : code === 'X11_FORWARDING_DENIED' ? ` Requested X11 mode: ${entry.mode}.` : '')};
   };
   function release(entry: Entry) {
     entry.released = true; if (!entry.session) entry.controller.abort(); entry.packet = undefined; entry.acknowledge?.(); entry.acknowledge = undefined;
@@ -39,6 +43,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
     }
   }
   const timer = setInterval(() => {
+    for (const [viewId, evidence] of terminalOnly) if (evidence.expires < Date.now()) terminalOnly.delete(viewId);
     for (const entry of entries.values()) if (Date.now() - entry.touched > 30000) release(entry);
   }, 1000);
   timer.unref?.();
@@ -64,12 +69,19 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
             }
           }
           if (entry.released || entry.controller.signal.aborted) return;
+          const profileSignature = signature(profileId, authorized), previous = terminalOnly.get(viewId);
+          entry.terminalOnlyVerified = !!previous && previous.expires > Date.now() && previous.signature === profileSignature;
+          if (mode === 'off') terminalOnly.delete(viewId);
           const session = entry.session = await ssh.openTerminal({profileId, term: 'xterm-256color', rows, columns,
             idleTimeoutMs: 300000, sessionTimeoutMs: 3600000,
             ...(mode === 'off' ? {} : {x11: {mode: mode as 'trusted' | 'untrusted'}})}, entry.controller.signal);
           // Attach the terminal result immediately, including when it fails before output drains.
           const result = session.result.then(value => {entry.result = value;}, error => {fail(entry, error);});
           if (entry.released) {await session.close(); await result; return;}
+          if (mode === 'off') {
+            if (terminalOnly.size >= 4) terminalOnly.delete(terminalOnly.keys().next().value!);
+            terminalOnly.set(viewId, {signature: profileSignature, expires: Date.now() + 300000});
+          }
           if (entry.cancelRequested) cancel(entry);
           const publish = async (data: Uint8Array) => {
             for (let offset = 0; offset < data.length && !entry.released; offset += 32768) {
@@ -120,6 +132,6 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
     },
     terminalCancel(input: unknown) {const {entry} = current(input); if (!entry.done) cancel(entry); return {requested: !entry.done};},
     terminalClose(input: unknown) {const {entry} = current(input); release(entry); return {closed: true};},
-    terminalRelease(input: unknown) {const entry = entries.get(key(data(input).viewId)); if (entry) release(entry); return {released: true};},
+    terminalRelease(input: unknown) {const viewId = key(data(input).viewId), entry = entries.get(viewId); terminalOnly.delete(viewId); if (entry) release(entry); return {released: true};},
   };
 }

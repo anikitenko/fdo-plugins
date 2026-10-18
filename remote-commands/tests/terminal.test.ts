@@ -14,9 +14,10 @@ function fixture() {
     endInput: async () => {}, close: async () => {closes++; await output.close(); terminal.resolve({reason: 'closed', exitCode: null, signal: null, remoteProcessStopped: null});},
     cancel: async () => {cancels++; return cancellation.promise;}};
   const ssh = {openTerminal: async (options: SSHTerminalOptions, _signal?: AbortSignal) => {opens.push(options); return session;}};
-  const controller = createTerminalController(ssh, async () => ({id: 'vm'}));
+  const profile = {id: 'vm', host: 'vm.example', port: 22, username: 'user', authenticationType: 'privateKey', trustedHostKey: 'SHA256:fixture'};
+  const controller = createTerminalController(ssh, async () => ({...profile}));
   const open = (mode = 'off') => controller.terminalOpen({viewId: 'view', profileId: 'vm', mode, rows: 24, columns: 80});
-  return {controller, session, ssh, output, terminal, cancellation, writes, resizes, opens, open, closes: () => closes, cancels: () => cancels};
+  return {controller, profile, session, ssh, output, terminal, cancellation, writes, resizes, opens, open, closes: () => closes, cancels: () => cancels};
 }
 
 test('terminal output holds a single raw packet until emulator acknowledgement, including split UTF-8 and ANSI', async () => {
@@ -89,6 +90,53 @@ test('X11 negotiation denial identifies server checks without blaming consent or
     assert.equal(state.done, true);
     f.controller.terminalClose({viewId: 'view', id});
   }
+});
+
+test('recent terminal-only success narrows X11 denial for the same view and unchanged profile', async () => {
+  for (const mode of ['trusted', 'untrusted']) {
+    const f = fixture(), opened = f.open('off'); await tick();
+    assert.equal(f.controller.terminalPoll({viewId: 'view', id: opened.id, ack: -1}).ready, true);
+    f.controller.terminalClose({viewId: 'view', id: opened.id}); await tick();
+    f.ssh.openTerminal = async options => {f.opens.push(options); throw {code: 'X11_FORWARDING_DENIED', message: '/private/cookie-secret'};};
+    const {id} = f.open(mode); await tick();
+    const message = f.controller.terminalPoll({viewId: 'view', id, ack: -1}).error!.message;
+    assert.match(message, /^The remote server rejected X11 forwarding\./);
+    assert.match(message, /This profile works with X11 off, and local X11 checks passed/);
+    assert.match(message, /xauth.*no-X11-forwarding or restrict/);
+    assert.ok(message.includes(`Requested X11 mode: ${mode}`));
+    assert.doesNotMatch(message, /PTY allocation|private|secret/);
+    assert.equal(f.opens.length, 2, 'only the two explicitly requested sessions were opened');
+    assert.deepEqual(f.opens[1].x11, {mode});
+    f.controller.terminalClose({viewId: 'view', id});
+  }
+});
+
+test('terminal-only diagnostic evidence expires and cannot cross profiles, endpoints or views', async () => {
+  const originalNow = Date.now;
+  try {
+    for (const scenario of ['host', 'port', 'username', 'authenticationType', 'trustedHostKey', 'profileId', 'viewId', 'release', 'expiry', 'failed-off']) {
+      const f = fixture(), opened = f.open('off'); await tick();
+      f.controller.terminalClose({viewId: 'view', id: opened.id}); await tick();
+      if (scenario === 'host') f.profile.host = 'other.example';
+      if (scenario === 'port') f.profile.port = 2222;
+      if (scenario === 'username') f.profile.username = 'other';
+      if (scenario === 'authenticationType') f.profile.authenticationType = 'password';
+      if (scenario === 'trustedHostKey') f.profile.trustedHostKey = 'SHA256:other';
+      if (scenario === 'release') f.controller.terminalRelease({viewId: 'view'});
+      if (scenario === 'expiry') Date.now = () => originalNow() + 300001;
+      f.ssh.openTerminal = async () => {throw {code: 'X11_FORWARDING_DENIED'};};
+      if (scenario === 'failed-off') {
+        const failed = f.open('off'); await tick(); f.controller.terminalClose({viewId: 'view', id: failed.id});
+      }
+      const viewId = scenario === 'viewId' ? 'other' : 'view';
+      const {id} = f.controller.terminalOpen({viewId, profileId: scenario === 'profileId' ? 'other' : 'vm', mode: 'untrusted', rows: 24, columns: 80}); await tick();
+      const message = f.controller.terminalPoll({viewId, id, ack: -1}).error!.message;
+      assert.doesNotMatch(message, /This profile works with X11 off/, scenario);
+      assert.match(message, /PTY allocation or shell startup/, scenario);
+      f.controller.terminalClose({viewId, id}); f.controller.terminalRelease({viewId: 'view'});
+      Date.now = originalNow;
+    }
+  } finally {Date.now = originalNow;}
 });
 
 test('released pending opens close late sessions and changed destination details prevent SSH opening', async () => {
