@@ -1,0 +1,414 @@
+.shell {
+  --rc-bg: var(--fdo-ui-background,#111820);
+  --rc-fg: var(--fdo-ui-color,#e6edf7);
+  --rc-line: var(--fdo-ui-border-color,#34414f);
+  --rc-muted: #a2b2c5;
+  --rc-accent: var(--fdo-ui-progress-color,#2785fa);
+  color: var(--rc-fg);
+  background: var(--rc-bg);
+  font: 14px/1.5 system-ui,sans-serif;
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 14px;
+  --fdo-ui-border: 1px solid var(--rc-line);
+}
+
+.shell #rc-message {
+  color: var(--rc-fg);
+  background: var(--rc-bg);
+}
+
+.shell * {
+  box-sizing: border-box;
+}
+
+.shell [hidden] {
+  display: none !important;
+}
+
+.shell .rc-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(380px,1fr) 300px;
+  gap: 18px;
+  min-height: calc(100vh - 28px);
+}
+
+.shell .rc-panel {
+  min-width: 0;
+  border: 1px solid var(--rc-line);
+  border-radius: 8px;
+  padding: 16px;
+  background: linear-gradient(125deg,#ffffff04,transparent);
+}
+
+.shell h1 {
+  font-size: 30px;
+  letter-spacing: -.7px;
+  margin: 0 0 12px;
+}
+
+.shell h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.shell h3 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.shell .rc-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.shell .rc-between {
+  justify-content: space-between;
+}
+
+.shell .rc-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.shell .rc-muted {
+  color: var(--rc-muted);
+  font-size: 12px;
+}
+
+.shell .rc-space {
+  margin-top: 12px;
+}
+
+.shell button,.shell input,.shell select,.shell textarea {
+  font: inherit;
+  color: inherit;
+  border: 1px solid var(--rc-line);
+  border-radius: 5px;
+  background: transparent;
+  padding: 8px 10px;
+  max-width: 100%;
+}
+
+.shell input,.shell select,.shell textarea {
+  min-width: 0;
+}
+
+.shell input::placeholder,.shell textarea::placeholder {
+  color: var(--rc-muted);
+  opacity: 1;
+}
+
+.shell button {
+  cursor: pointer;
+  background: #ffffff05;
+}
+
+.shell button:hover {
+  background: #ffffff12;
+}
+
+.shell button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.shell button.rc-primary {
+  background: var(--rc-accent);
+  border-color: var(--rc-accent);
+  color: white;
+  font-weight: 600;
+}
+
+.shell :focus-visible {
+  outline: 2px solid var(--rc-accent);
+  outline-offset: 2px;
+}
+
+.shell label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.shell .rc-field {
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.shell input[type=search],.shell .rc-full {
+  width: 100%;
+}
+
+.shell input[type=number] {
+  width: 78px;
+}
+
+.shell input[type=checkbox] {
+  accent-color: var(--rc-accent);
+}
+
+.shell .rc-vm {
+  width: 100%;
+  text-align: left;
+  padding: 12px;
+  margin-top: 6px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.shell .rc-vm > span:last-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.shell .rc-vm[aria-pressed=true] {
+  background: #217cf044;
+  border-color: var(--rc-accent);
+}
+
+.shell .rc-dot {
+  color: #a2b2c5;
+  flex: 0 0 auto;
+}
+
+.shell .rc-ok {
+  color: #78e69b;
+}
+
+.shell .rc-error {
+  color: #ffb0ac;
+}
+
+.shell .rc-vm span {
+  display: block;
+}
+
+.shell .rc-count {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--rc-muted);
+}
+
+.shell .rc-center {
+  padding: 12px 0;
+  min-width: 0;
+}
+
+.shell .rc-identity {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rc-line);
+}
+
+.shell #rc-vm-name {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.shell .rc-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: var(--rc-muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.shell .rc-batch-picker {
+  flex: 1;
+  min-width: 180px;
+}
+
+.shell #rc-batches {
+  width: 100%;
+  font-weight: 600;
+}
+
+.shell #rc-editor {
+  height: 238px;
+  width: 100%;
+  resize: vertical;
+  font: 14px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;
+  background: #080e1466;
+  padding: 14px;
+  tab-size: 2;
+}
+
+.shell #rc-ace {
+  height: 238px;
+  border: 1px solid var(--rc-line);
+  border-radius: 6px;
+}
+
+.shell .rc-code {
+  font: 13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: 14px;
+  background: #080e1466;
+  border: 1px solid var(--rc-line);
+  border-radius: 5px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.shell details {
+  border: 1px solid var(--rc-line);
+  border-radius: 5px;
+  padding: 8px 12px;
+}
+
+.shell summary {
+  cursor: pointer;
+  color: var(--rc-muted);
+}
+
+.shell .rc-output {
+  min-height: 260px;
+  flex: 1;
+}
+
+.shell .rc-output header {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rc-line);
+}
+
+.shell #rc-output {
+  padding-top: 14px;
+}
+
+.shell #rc-output pre {
+  margin-top: 8px;
+}
+
+.shell #rc-output .rc-code {
+  max-height: 280px;
+}
+
+.shell #rc-message {
+  padding: 8px 12px;
+}
+
+.shell #rc-persistence {
+  min-height: 18px;
+}
+
+.shell .rc-card {
+  padding: 12px;
+  border: 1px solid var(--rc-line);
+  border-radius: 6px;
+  background: #ffffff03;
+  margin-top: 10px;
+}
+
+.shell .rc-card .rc-code {
+  margin: 10px 0;
+  max-height: 110px;
+  padding: 10px;
+}
+
+.shell .rc-card button {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.shell .rc-favorite {
+  color: #ffcf50;
+}
+
+.shell .rc-parameters label {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  margin-top: 6px;
+}
+
+.shell dialog {
+  color: var(--rc-fg);
+  background: var(--rc-bg);
+  border: 1px solid var(--rc-line);
+  border-radius: 10px;
+  width: min(760px,94vw);
+  max-height: 90vh;
+  padding: 22px;
+  overflow: auto;
+}
+
+.shell dialog::backdrop {
+  background: #0009;
+}
+
+.shell dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shell dialog label {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.shell dialog textarea {
+  min-height: 140px;
+  font-family: monospace;
+}
+
+.shell .rc-review-target {
+  color: #79b8ff;
+  font-size: 16px;
+}
+
+.shell .rc-danger {
+  color: #ffb0ac;
+}
+
+.shell .rc-limit {
+  font-size: 12px;
+  color: var(--rc-muted);
+  padding: 10px 0;
+}
+
+@media (max-width:1150px) {
+  .shell .rc-layout {
+    grid-template-columns: 190px minmax(300px,1fr);
+  }
+  .shell .rc-saved {
+    grid-column: 2;
+  }
+  .shell .rc-vms {
+    grid-row: 1/3;
+  }
+}
+
+@media (max-width:720px) {
+  .shell .rc-layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .shell .rc-vms {
+    max-height: 270px;
+    overflow: auto;
+  }
+  .shell h1 {
+    font-size: 26px;
+  }
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .shell * {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

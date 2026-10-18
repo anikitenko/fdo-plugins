@@ -15,3 +15,7 @@ spec:
       repository: https://github.com/anikitenko/fdo-plugins
       targetRevision: v1.0.0
       path: /cute-calculator
+    - name: remote-commands
+      repository: https://github.com/anikitenko/fdo-plugins
+      targetRevision: main
+      path: /remote-commands

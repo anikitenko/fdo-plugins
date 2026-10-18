@@ -1,0 +1,6 @@
+.build/
+preview.html
+preview.png
+.dist/
+logs/
+node_modules/
