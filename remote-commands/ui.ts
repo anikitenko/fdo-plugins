@@ -176,6 +176,9 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
     const box = byId('rc-output'), result = output.get(current); box.replaceChildren();
     if (!result) {box.append(el('p', 'No execution results for this VM. Example batches are templates only.', 'rc-muted')); return;}
     box.append(el('p', result.status, result.status.startsWith('Succeeded') ? 'rc-ok' : result.status.startsWith('Running') ? '' : 'rc-error'), el('p', result.details, 'rc-muted'));
+    if (/TERM[^\n]*(?:not set|unset)|terminal is not fully functional|Error opening terminal/i.test(result.stderr + '\n' + result.stdout)) {
+      box.append(el('p', 'This output-only run had no PTY. Review it again and choose Run in terminal for interactive programs. X11 is unrelated; setting TERM alone does not create a terminal.', 'rc-error'));
+    }
     if (result.termination) box.append(el('p', result.termination, 'rc-muted'));
     for (const [label, text, cls] of [['Executed script', result.command, ''], ['stdout', result.stdout, ''], ['stderr', result.stderr, 'rc-error']]) {
       box.append(el('h3', label), el('pre', text || '(empty)', `rc-code ${cls}`));
@@ -293,19 +296,27 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
   async function openReview(script: string) {
     if (!state() || busy) return;
     const profileId = current, settings = state();
-    const interactive = select('rc-run-mode').value === 'terminal';
-    const x11Mode = select('rc-terminal-x11').value;
+    let interactive = select('rc-run-mode').value === 'terminal';
+    let x11Mode = select('rc-terminal-x11').value;
     let reviewedProfile = profiles.find(p => p.id === profileId)!;
     let label = profiles.find(p => p.id === profileId)!.label;
     const form = modal('Review remote execution');
     const destination = el('p', 'Resolving SSH destination…', 'rc-review-target');
     const trust = el('p', '', 'rc-muted rc-profile-trust');
-    form.append(destination, trust, el('p', `${interactive ? `Interactive PTY · X11 ${x11Mode} · ${x11Mode === 'untrusted' ? 'Untrusted X11 authorization: up to 5 minutes; expiry closes this terminal' : '5-minute idle / 1-hour session limits'}; output-only timeout and capture settings do not apply` : `Output-only · Timeout ${settings.timeout}s · capture ${settings.captureBytes / 1024} KiB`} · ${settings.stopOnError ? 'Stop on error: set -e' : 'Continue using the remote shell defaults'}`, 'rc-muted'));
+    const runSettings = el('p', '', 'rc-muted');
+    const modeLabel = el('label', 'Execution mode'), modePicker = el('select'); modePicker.setAttribute('aria-label', 'Review execution mode');
+    for (const [value, text] of [['batch', 'Run without a terminal'], ['terminal', 'Run in terminal (PTY): editors, pagers and prompts']]) {const option = el('option', text); option.value = value; modePicker.append(option);}
+    modePicker.value = interactive ? 'terminal' : 'batch'; modeLabel.append(modePicker);
+    const x11Label = el('label', 'X11 forwarding'), x11Picker = el('select'); x11Picker.setAttribute('aria-label', 'Review X11 forwarding');
+    for (const [value, text] of [['off', 'Off — no X server needed for terminal programs'], ['untrusted', 'Untrusted — verified local X SECURITY required'], ['trusted', 'Trusted — local X display access']]) {const option = el('option', text); option.value = value; x11Picker.append(option);}
+    x11Picker.value = x11Mode; x11Picker.disabled = !interactive; x11Label.append(x11Picker);
+    const settingsText = () => `${interactive ? `Interactive PTY · TERM=xterm-256color · X11 ${x11Mode} · ${x11Mode === 'untrusted' ? 'Untrusted X11 authorization: up to 5 minutes; expiry closes this terminal' : '5-minute idle / 1-hour session limits'}; output-only timeout and capture settings do not apply` : `Output-only · Timeout ${settings.timeout}s · capture ${settings.captureBytes / 1024} KiB`} · ${settings.stopOnError ? 'Stop on error: set -e' : 'Continue using the remote shell defaults'}`;
+    runSettings.textContent = settingsText(); form.append(modeLabel, x11Label, destination, trust, runSettings);
     form.append(el('p', 'Template values are inserted verbatim as shell fragments. Include quotes where needed. Review the complete resolved script and destination before executing.', 'rc-muted'));
     const values = {...settings.values}; let token = '', revision = 0;
     const preview = el('pre', 'Resolve the commands to review the exact script.', 'rc-code');
     const feedback = el('p', '', 'rc-error'); feedback.setAttribute('role', 'alert');
-    const execute = button('Execute on VM', async () => {
+    const execute = button(interactive ? 'Run in terminal' : 'Run without terminal', async () => {
       if (!token || busy) return;
       if (interactive) {
         const reviewedToken = token; token = ''; execute.disabled = true;
@@ -370,7 +381,19 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
         settings.values = {...values}; persist(profileId);
       } catch (e) {if (attempt === revision) {preview.textContent = 'Commands are not ready for execution.'; feedback.textContent = e instanceof Error ? e.message : String(e);}}
     };
-    form.append(el('p', interactive ? 'This batch opens a new PTY and permits arbitrary keyboard input. Close any existing terminal first. Programs share one script shell; the terminal closes when the script exits. Interactive profile consent is required.' : 'Output-only execution has no keyboard input or terminal emulation. For editors, pagers or password prompts, choose Interactive terminal before reviewing.', 'rc-muted'), button('Resolve commands', resolve), preview, feedback, el('p', 'Output streams live. Cancel or closing this view requests termination; only affirmative host evidence confirms the remote process stopped.', 'rc-muted'), execute, button('Copy resolved script', () => copyText(preview.textContent || '')), closeButton());
+    const modeHelp = el('p', '', 'rc-muted');
+    const updateModeHelp = () => {modeHelp.textContent = interactive ? 'This batch opens a PTY and permits keyboard input. X11 is not needed for editors or pagers; leave it Off unless running graphical apps. Programs share one script shell; the terminal closes when the script exits. Interactive profile consent is required.' : 'This run has no PTY or keyboard input. Programs such as less, editors and password prompts need Run in terminal. X11 does not provide a terminal.';};
+    modePicker.onchange = () => {
+      interactive = modePicker.value === 'terminal'; select('rc-run-mode').value = modePicker.value; x11Picker.disabled = !interactive;
+      token = ''; revision++; execute.disabled = true; execute.textContent = interactive ? 'Run in terminal' : 'Run without terminal';
+      runSettings.textContent = settingsText(); updateModeHelp(); void resolve();
+    };
+    x11Picker.onchange = () => {
+      x11Mode = x11Picker.value; if (!select('rc-terminal-x11').disabled) select('rc-terminal-x11').value = x11Mode;
+      token = ''; revision++; execute.disabled = true; runSettings.textContent = settingsText(); void resolve();
+    };
+    updateModeHelp();
+    form.append(modeHelp, button('Resolve commands', resolve), preview, feedback, el('p', 'Output streams live. Cancel or closing this view requests termination; only affirmative host evidence confirms the remote process stopped.', 'rc-muted'), execute, button('Copy resolved script', () => copyText(preview.textContent || '')), closeButton());
     await resolve();
   }
   async function load() {

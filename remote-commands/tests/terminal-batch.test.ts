@@ -23,9 +23,10 @@ function fixture() {
 }
 
 test('terminal launch preserves quotes, multiline shell state and independent stdin for interactive commands', () => {
-  const script = "cd /\nexport CHECK=kept\nprintf '%s\\n' \"quote's $CHECK\"\nread answer\nprintf 'after:%s:%s' \"$PWD\" \"$answer\"";
-  const output = execFileSync('/bin/sh', ['-c', terminalLaunch(script)], {input: 'keyboard input\n', encoding: 'utf8'});
-  assert.equal(output, "quote's kept\nafter:/:keyboard input");
+  const script = "cd /\nexport CHECK=kept\nprintf '%s\\n' \"quote's $CHECK\"\nread answer\nprintf 'after:%s:%s:%s' \"$PWD\" \"$answer\" \"$TERM\"";
+  const env = {...process.env}; delete env.TERM; delete env.DISPLAY;
+  const output = execFileSync('/bin/sh', ['-c', terminalLaunch(script)], {env, input: 'keyboard input\n', encoding: 'utf8'});
+  assert.equal(output, "quote's kept\nafter:/:keyboard input:xterm-256color");
   assert.throws(() => terminalLaunch('x'.repeat(3000)), /3000-byte/);
   assert.throws(() => terminalLaunch('echo ok\x03echo bad'), /control characters/);
 });
