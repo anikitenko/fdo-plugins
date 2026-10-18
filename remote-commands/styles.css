@@ -458,6 +458,21 @@
   margin: 0;
 }
 
+.shell #rc-terminal-ended {
+  padding: 14px;
+  border: 1px solid var(--rc-line);
+  border-radius: 5px;
+  background: var(--rc-bg);
+}
+
+.shell #rc-terminal-ended p {
+  margin: 0;
+}
+
+.shell #rc-terminal-frame[data-state=ended] {
+  border-style: dashed;
+}
+
 .shell #rc-console [aria-pressed=true] {
   border-color: var(--rc-accent);
   background: #217cf044;

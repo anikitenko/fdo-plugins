@@ -239,10 +239,86 @@ test('terminal UI requires explicit connect, acknowledges only consumed bytes an
     await f.click('#rc-terminal-cancel'); await wait(); assert.match(f.$('#rc-terminal-status').textContent, /unconfirmed/);
     await events.close(); result.reject({code: 'X11_AUTH_UNAVAILABLE'}); await wait();
     assert.match(f.$('#rc-terminal-status').textContent, /expired or revoked/);
+    assert.equal(f.$('#rc-terminal-ended').hidden, false);
+    assert.equal(f.$('#rc-terminal-ended-title').textContent, 'Session ended with an error');
     assert.equal(f.$('#rc-terminal-panel').hidden, false); assert.equal(f.$('#rc-batch-panel').hidden, true);
     assert.equal(f.$('#rc-terminal-open').disabled, false); assert.equal(rendered.length, 2);
     f.win.dispatchEvent(new f.win.Event('pagehide')); await f.settle(); assert.equal(disposed, true); assert.ok(closes >= 1);
   } finally {f.dom.window.close();}
+});
+
+test('Ctrl+D and Cmd+D end only the focused terminal, preserve output and offer an explicit new-session review', async () => {
+  for (const modifier of ['ctrlKey', 'metaKey']) {
+    const f = await fixture(), events = channel<any>(), result = deferred<any>(), cancellation = deferred<any>();
+    let cancels = 0, opens = 0, emulatorKeys = 0;
+    const writes: string[] = [];
+    f.win.FDOTerminal = {create: () => ({write: (_data: Uint8Array, done: () => void) => done(),
+      onData: () => ({dispose() {}}), onResize: () => ({dispose() {}}), getSize: () => ({rows: 24, columns: 80}),
+      focus() {f.$('#rc-terminal-screen').tabIndex = -1; f.$('#rc-terminal-screen').focus();}, reset() {}, dispose() {}})};
+    f.ssh.openTerminal = async () => {opens++; return {output: events.iterator, result: result.promise,
+      write: async text => {writes.push(text as string);}, resize: async () => {}, endInput: async () => {},
+      cancel: async () => {cancels++; return cancellation.promise;}, close: async () => {}};};
+    const wait = async () => {await new Promise(resolve => setTimeout(resolve, 140)); await f.settle();};
+    const key = (node: any, repeat = false) => {
+      const event = new f.win.KeyboardEvent('keydown', {key: 'd', [modifier]: true, repeat, bubbles: true, cancelable: true});
+      node.dispatchEvent(event); return event;
+    };
+    try {
+      await f.click('#rc-terminal-open'); await f.click('#rc-terminal-review-connect'); await wait();
+      assert.match(f.$('#rc-terminal-status').textContent, /Ctrl\+D \/ Cmd\+D ends/);
+      f.$('#rc-terminal-screen').addEventListener('keydown', () => {emulatorKeys++;});
+      key(f.$('#rc-editor')); await wait(); assert.equal(cancels, 0, 'editor shortcuts cannot end the terminal');
+      await f.click('#rc-console-batch'); key(f.$('#rc-terminal-screen')); await wait(); assert.equal(cancels, 0, 'hidden terminal shortcuts are ignored');
+      await f.click('#rc-console-terminal'); await f.click('#rc-terminal-prompt');
+      key(f.$('#rc-terminal-screen')); await wait(); assert.equal(cancels, 0, 'open dialogs suppress terminal shortcuts');
+      await f.click('#rc-terminal-prompt-back');
+      emulatorKeys = 0;
+      assert.equal(key(f.$('#rc-terminal-screen')).defaultPrevented, true);
+      key(f.$('#rc-terminal-screen'), true); key(f.$('#rc-terminal-screen')); await wait();
+      assert.equal(cancels, 1); assert.equal(emulatorKeys, 0, 'shortcut must not also send EOF through the emulator');
+      assert.deepEqual(writes, []); assert.match(f.$('#rc-terminal-status').textContent, /Ending session/);
+      assert.equal(f.$('#rc-terminal-interrupt').disabled, true);
+      assert.equal(f.$('#rc-terminal-cancel').disabled, true);
+      await wait(); assert.match(f.$('#rc-console-terminal').textContent, /ending/, 'polling cannot reactivate an ending session');
+      cancellation.resolve({remoteProcessStopped: null});
+      result.resolve({reason: 'cancelled', exitCode: null, signal: null, remoteProcessStopped: null}); await events.close(); await wait();
+      assert.equal(f.$('#rc-terminal-ended').hidden, false);
+      assert.equal(f.$('#rc-terminal-ended-title').textContent, 'Session ended');
+      assert.match(f.$('#rc-terminal-status').textContent, /ended by request.*unconfirmed/);
+      assert.doesNotMatch(f.$('#rc-terminal-status').textContent, /exit unknown/);
+      assert.match(f.$('#rc-terminal-ended-detail').textContent, /dev-api-01.*Keyboard input is disconnected/);
+      assert.equal(f.$('#rc-terminal-frame').hidden, false);
+      assert.equal(f.$('#rc-terminal-screen').getAttribute('aria-disabled'), 'true');
+      assert.equal(f.win.document.activeElement.id, 'rc-terminal-reconnect');
+      assert.equal(f.$('#rc-terminal-open').disabled, false); assert.equal(f.$('#rc-terminal-x11').disabled, false);
+      assert.match(f.$('#rc-console-terminal').textContent, /ended/);
+      await f.click('#rc-terminal-reconnect');
+      assert.equal(f.$('#rc-terminal-review').open, true); assert.equal(opens, 1, 'new-session action reviews before reconnecting');
+      await f.click('#rc-terminal-review-back');
+    } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); await f.settle(); f.dom.window.close();}
+  }
+});
+
+test('natural terminal exit keeps its outcome and does not steal focus from batch editing', async () => {
+  const f = await fixture(), events = channel<any>(), result = deferred<any>();
+  f.win.FDOTerminal = {create: () => ({write: (_data: Uint8Array, done: () => void) => done(),
+    onData: () => ({dispose() {}}), onResize: () => ({dispose() {}}), getSize: () => ({rows: 24, columns: 80}), focus() {}, reset() {}, dispose() {}})};
+  f.ssh.openTerminal = async () => ({output: events.iterator, result: result.promise, write: async () => {}, resize: async () => {}, endInput: async () => {},
+    cancel: async () => ({remoteProcessStopped: null}), close: async () => {}});
+  try {
+    await f.click('#rc-terminal-open'); await f.click('#rc-terminal-review-connect');
+    await new Promise(resolve => setTimeout(resolve, 140)); await f.settle();
+    await f.click('#rc-console-batch'); f.$('#rc-editor').focus();
+    result.resolve({reason: 'exited', exitCode: 0, signal: null, remoteProcessStopped: true}); await events.close();
+    await new Promise(resolve => setTimeout(resolve, 140)); await f.settle();
+    assert.equal(f.win.document.activeElement.id, 'rc-editor');
+    assert.equal(f.$('#rc-terminal-panel').hidden, true);
+    assert.match(f.$('#rc-terminal-status').textContent, /Session ended · shell exited · exit 0/);
+    assert.match(f.$('#rc-terminal-status').textContent, /Host confirmed the remote shell stopped/);
+    assert.equal(f.$('#rc-terminal-ended').hidden, false);
+    await f.click('#rc-console-terminal');
+    assert.equal(f.$('#rc-terminal-reconnect').disabled, false);
+  } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); await f.settle(); f.dom.window.close();}
 });
 
 test('terminal does not open without a renderer and shows unsupported X11 without silently downgrading', async () => {
