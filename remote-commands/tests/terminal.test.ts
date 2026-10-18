@@ -82,3 +82,14 @@ test('released pending opens close late sessions and changed destination details
   assert.equal(other.controller.terminalPoll({viewId: 'view', id, ack: -1}).error!.code, 'INVALID_REQUEST');
   other.controller.terminalClose({viewId: 'view', id});
 });
+
+test('terminal access denials include the requested X11 mode without pretending to know the host failed check', async () => {
+  for (const mode of ['off', 'trusted', 'untrusted']) {
+    const f = fixture(); f.ssh.openTerminal = async () => {throw {code: 'ACCESS_DENIED'};};
+    const {id} = f.open(mode); await tick();
+    const message = f.controller.terminalPoll({viewId: 'view', id, ack: -1}).error!.message;
+    assert.ok(message.includes(`Requested X11 mode: ${mode}`)); assert.match(message, /secrets.consume/);
+    if (mode !== 'off') assert.match(message, /consents are distinct/);
+    f.controller.terminalClose({viewId: 'view', id});
+  }
+});

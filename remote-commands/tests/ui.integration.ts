@@ -187,10 +187,17 @@ test('terminal UI requires explicit connect, acknowledges only consumed bytes an
     close: async () => {closes++; await events.close(); result.resolve({reason: 'closed', exitCode: null, signal: null, remoteProcessStopped: null});}};};
   const wait = async () => {await new Promise(resolve => setTimeout(resolve, 120)); await f.settle();};
   try {
+    assert.equal(f.win.document.querySelectorAll('#rc-console').length, 1);
+    assert.equal(f.$('#rc-batch-panel').hidden, false); assert.equal(f.$('#rc-terminal-panel').hidden, true);
+    assert.equal(f.$('#rc-console').contains(f.$('#rc-output')), true);
+    assert.equal(f.$('#rc-console').contains(f.$('#rc-terminal-screen')), true);
+    await f.click('#rc-console-terminal'); assert.equal(opened.length, 0);
     f.$('#rc-terminal-x11').value = 'untrusted'; await f.click('#rc-terminal-open');
     assert.equal(opened.length, 0); assert.match(f.$('#rc-terminal-review-mode').textContent, /will not fall back/);
     await f.click('#rc-terminal-review-connect'); await wait();
     assert.equal(opened.length, 1); assert.deepEqual(opened[0].x11, {mode: 'untrusted'});
+    assert.equal(f.$('#rc-batch-panel').hidden, true); assert.equal(f.$('#rc-terminal-panel').hidden, false);
+    assert.equal(f.$('#rc-console-terminal').getAttribute('aria-pressed'), 'true');
     events.push({sequence: 0, data: Uint8Array.from([27, 91, 50, 74, 0xf0, 0x9f])});
     events.push({sequence: 1, data: Uint8Array.from([0x8c, 0x8d])}); await wait();
     assert.equal(rendered.length, 1); await wait(); assert.equal(rendered.length, 1, 'no next packet until consumed');
@@ -201,8 +208,21 @@ test('terminal UI requires explicit connect, acknowledges only consumed bytes an
     assert.deepEqual(writes, ['sudo vim notes.txt\r', 'test-secret-password\r']);
     assert.equal(JSON.stringify([...f.persisted.values()]).includes('test-secret-password'), false);
     assert.doesNotMatch(f.$('#rc-terminal-screen').textContent, /test-secret-password/);
+    await f.click('#rc-console-batch'); assert.equal(f.$('#rc-terminal-panel').hidden, true);
+    keyboard!('ignored while hidden'); await wait(); assert.equal(writes.length, 2);
+    assert.match(f.$('#rc-console-terminal').textContent, /active/);
+    await f.type('#rc-editor', 'echo batch output'); await f.click('#rc-run'); await f.action('Execute on VM');
+    await new Promise(resolve => setTimeout(resolve, 300)); await f.settle();
+    assert.equal(f.$('#rc-batch-panel').hidden, false); assert.match(f.$('#rc-output').textContent, /Failed · exit 3/);
+    assert.equal(opened.length, 1); assert.equal(disposed, false); assert.equal(closes, 0);
+    await f.click('#rc-console-terminal'); assert.equal(f.$('#rc-batch-panel').hidden, true);
+    assert.equal(rendered.length, 2, 'switching views preserves the same emulator output');
     await f.click('#rc-terminal-interrupt'); await wait(); assert.equal(writes.at(-1), '\x03');
     await f.click('#rc-terminal-cancel'); await wait(); assert.match(f.$('#rc-terminal-status').textContent, /unconfirmed/);
+    await events.close(); result.reject({code: 'X11_AUTH_UNAVAILABLE'}); await wait();
+    assert.match(f.$('#rc-terminal-status').textContent, /expired or revoked/);
+    assert.equal(f.$('#rc-terminal-panel').hidden, false); assert.equal(f.$('#rc-batch-panel').hidden, true);
+    assert.equal(f.$('#rc-terminal-open').disabled, false); assert.equal(rendered.length, 2);
     f.win.dispatchEvent(new f.win.Event('pagehide')); await f.settle(); assert.equal(disposed, true); assert.ok(closes >= 1);
   } finally {f.dom.window.close();}
 });
@@ -217,5 +237,31 @@ test('terminal does not open without a renderer and shows unsupported X11 withou
     await new Promise(resolve => setTimeout(resolve, 200)); await f.settle();
     assert.equal(opens, 1); assert.match(f.$('#rc-terminal-status').textContent, /Untrusted forwarding requires/);
     assert.equal(f.$('#rc-terminal-x11').value, 'untrusted'); assert.equal(f.$('#rc-terminal-open').disabled, false);
+  } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); f.dom.window.close();}
+});
+
+test('interactive batch review routes the entire script to a fresh PTY, while output-only runs remain separate', async () => {
+  const f = await fixture(), output = channel<any>(), result = deferred<any>(), writes: string[] = [];
+  let opens = 0, key: ((text: string) => void) | undefined;
+  const wait = async () => {await new Promise(resolve => setTimeout(resolve, 150)); await f.settle();};
+  f.win.FDOTerminal = {create: () => ({write: (_: Uint8Array, consume: () => void) => consume(),
+    onData: (fn: (text: string) => void) => {key = fn; return {dispose() {}};}, onResize: () => ({dispose() {}}), getSize: () => ({rows: 24, columns: 80}), focus() {}, reset() {}, dispose() {}})};
+  f.ssh.openTerminal = async options => {assert.deepEqual(options.x11, {mode: 'untrusted'}); opens++; return {output: output.iterator, result: result.promise,
+    write: async text => {writes.push(text as string);}, resize: async () => {}, endInput: async () => {}, cancel: async () => ({remoteProcessStopped: null}),
+    close: async () => {await output.close(); result.resolve({reason: 'closed', exitCode: null, signal: null, remoteProcessStopped: null});}};};
+  try {
+    f.$('#rc-run-mode').value = 'terminal'; f.$('#rc-terminal-x11').value = 'untrusted';
+    await f.type('#rc-editor', "cd /tmp\nexport TEST=ok\nnano notes.txt\nprintf '%s' \"$TEST\"");
+    await f.click('#rc-run'); assert.equal(opens, 0); assert.equal(f.calls.length, 0);
+    assert.match(f.$('#rc-dialog').textContent, /Interactive PTY/); assert.match(f.$('#rc-dialog').textContent, /up to 5 minutes/); assert.match(f.$('#rc-dialog').textContent, /output-only timeout and capture settings do not apply/);
+    await f.action('Execute on VM'); await wait();
+    assert.equal(opens, 1); assert.equal(f.calls.length, 0); assert.equal(writes.length, 1);
+    assert.equal(f.$('#rc-terminal-panel').hidden, false); assert.equal(f.$('#rc-batch-panel').hidden, true);
+    assert.match(writes[0], /^exec sh -c '/); assert.match(writes[0], /nano notes.txt\nprintf/);
+    key!('\x18'); await wait(); assert.equal(writes.at(-1), '\x18');
+    assert.match(f.$('#rc-terminal-target').textContent, /dev-api-01/);
+    await f.click('#rc-terminal-close');
+    f.$('#rc-run-mode').value = 'batch'; await f.click('#rc-run'); assert.match(f.$('#rc-dialog').textContent, /no keyboard input/);
+    await f.action('Cancel');
   } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); f.dom.window.close();}
 });

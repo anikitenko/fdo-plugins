@@ -3,9 +3,10 @@ import {initialState, resolveScript, serviceMessage, validateState} from './mode
 import {publicProfile} from './profiles.ts';
 import {createLiveController} from './live.ts';
 import {createTerminalController} from './terminal.ts';
+import {terminalLaunch} from './terminal-launch.ts';
 
 export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'watchStatus'> & Partial<Pick<SSHClient, 'openTerminal'>>, getStore: () => StoreWithLifecycle) {
-  const reviews = new Map<string, {profileId: string; profile: SSHProfileSummary; command: string; timeoutMs: number; maxOutputBytes: number; expires: number}>();
+  const reviews = new Map<string, {profileId: string; profile: SSHProfileSummary; command: string; timeoutMs: number; maxOutputBytes: number; executionMode: 'batch' | 'terminal'; x11Mode: 'off' | 'trusted' | 'untrusted'; expires: number}>();
   const record = (v: unknown): Record<string, any> => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('Provide an action payload.');
     return v as Record<string, any>;
@@ -29,6 +30,7 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
     if (typeof data.token !== 'string') throw new Error('Review the commands before running.');
     const review = reviews.get(data.token);
     if (!review || review.expires < Date.now()) throw new Error('This review expired or was used. Review the commands again.');
+    if (review.executionMode !== 'batch') throw new Error('This review is for an interactive terminal, not output-only execution.');
     reviews.delete(data.token);
     return live.run({viewId: data.viewId, runId: data.runId, profileId: review.profileId,
       options: {profileId: review.profileId, command: review.command, timeoutMs: review.timeoutMs, maxOutputBytes: review.maxOutputBytes}}, async () => {
@@ -41,6 +43,13 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
 
   return {
     ...terminal,
+    terminalStart(input: unknown) {
+      const data = record(input), review = reviews.get(data.token);
+      if (!review || review.expires < Date.now() || review.executionMode !== 'terminal') throw new Error('Review this batch for interactive execution before running.');
+      reviews.delete(data.token);
+      return terminal.terminalOpen({viewId: data.viewId, profileId: review.profileId, expectedProfile: review.profile,
+        mode: review.x11Mode, rows: data.rows, columns: data.columns}, terminalLaunch(review.command));
+    },
     run: async (input: unknown) => executeReview(input),
     start(input: unknown) {
       const task = executeReview(input);
@@ -76,14 +85,17 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
       const values = record(data.values);
       if (Object.values(values).some(v => typeof v !== 'string' || v.length > 4000)) throw new Error('Invalid template values.');
       const command = resolveScript(data.script, values, data.stopOnError);
+      const executionMode = data.executionMode ?? 'batch', x11Mode = data.x11Mode ?? 'off';
+      if (!['batch', 'terminal'].includes(executionMode) || !['off', 'trusted', 'untrusted'].includes(x11Mode)) throw new Error('Choose a supported execution and X11 mode.');
+      if (executionMode === 'terminal') terminalLaunch(command);
       const profile = await authorize(profileId);
       const maxOutputBytes = data.maxOutputBytes ?? 1048576;
       if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1024 || maxOutputBytes > 16777216) throw new Error('Capture must be between 1 KiB and 16 MiB.');
       for (const [key, value] of reviews) if (value.expires < Date.now()) reviews.delete(key);
       if (reviews.size >= 20) reviews.delete(reviews.keys().next().value!);
       const token = crypto.randomUUID();
-      reviews.set(token, {profileId, profile, command, timeoutMs: data.timeout * 1000, maxOutputBytes, expires: Date.now() + 300000});
-      return {token, command, profileId, label: profile.label, profile, timeout: data.timeout, maxOutputBytes};
+      reviews.set(token, {profileId, profile, command, timeoutMs: data.timeout * 1000, maxOutputBytes, executionMode, x11Mode, expires: Date.now() + 300000});
+      return {token, command, profileId, label: profile.label, profile, timeout: data.timeout, maxOutputBytes, executionMode, x11Mode};
     },
   };
 }

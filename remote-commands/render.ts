@@ -31,19 +31,24 @@ export function renderRemoteCommands(): string {
           <label for="rc-editor" class="rc-muted">Shell script · one remote shell per run</label><textarea id="rc-editor" spellcheck="false" aria-label="Shell script"></textarea><div id="rc-ace" hidden="hidden" aria-label="Shell script editor"></div>
           <details><summary>Find and replace in this batch</summary><div class="rc-row rc-space"><input id="rc-find" aria-label="Find literal text" placeholder="Find literal text" /><input id="rc-replace" aria-label="Replacement text" placeholder="Replace with" />${btn('rc-replace-all','Replace all')}<span id="rc-replaced" class="rc-muted" role="status"></span></div></details>
           <div id="rc-parameters" class="rc-parameters"></div>
-          <div class="rc-row rc-between"><div class="rc-row">${btn('rc-run','▶ Run batch',true)}${btn('rc-run-selected','Run selected')}</div><div class="rc-row"><label><input id="rc-stop" type="checkbox" />Stop on error</label><label>Timeout (s)<input id="rc-timeout" type="number" min="1" max="120" /></label><label>Capture (KiB)<input id="rc-capture" type="number" min="1" max="16384" /></label></div></div>
+          <div class="rc-row rc-between"><div class="rc-row"><label>Execution mode<select id="rc-run-mode"><option value="batch">Output only (noninteractive)</option><option value="terminal">Interactive terminal (PTY)</option></select></label>${btn('rc-run','▶ Run batch',true)}${btn('rc-run-selected','Run selected')}</div><div class="rc-row"><label><input id="rc-stop" type="checkbox" />Stop on error</label><label>Timeout (s)<input id="rc-timeout" type="number" min="1" max="120" /></label><label>Capture (KiB)<input id="rc-capture" type="number" min="1" max="16384" /></label></div></div>
           <div class="rc-row rc-between"><span id="rc-persistence" class="rc-muted" role="status"></span>${btn('rc-retry-save','Retry saving')}</div>
         </div>
-        <section class="rc-panel rc-output"><header class="rc-row rc-between"><h2>Execution output</h2><div class="rc-row">${btn('rc-cancel','Cancel run')}${btn('rc-copy-output','Copy')}${btn('rc-clear','Clear')}</div></header><div id="rc-running" hidden="hidden"><p id="rc-running-target" class="rc-muted"></p>${progress}<p class="rc-muted">Streaming stdout and stderr. Closing this view requests cancellation; remote termination requires confirmation from the host.</p></div><div id="rc-output"><p class="rc-muted">No execution results. Choose a VM, review a script, then run it explicitly.</p></div></section>
-        <section id="rc-terminal-panel" class="rc-panel rc-stack" aria-label="Interactive SSH terminal">
-          <h2>Interactive terminal</h2>
-          <p class="rc-muted">Run interactive programs here, including editors, pagers, monitors, REPLs and sudo. Keyboard input goes to the connected VM; its terminal controls password echo. Batch buttons above run without interaction.</p>
-          <div class="rc-row"><label>X11 forwarding<select id="rc-terminal-x11"><option value="off">Off</option><option value="untrusted">Untrusted (requires X SECURITY)</option><option value="trusted">Trusted (local display access)</option></select></label>${btn('rc-terminal-open','Open terminal',true)}${btn('rc-terminal-close','Close terminal')}</div>
-          <p id="rc-terminal-target" class="rc-review-target">No terminal connected.</p>
-          <div class="rc-row">${btn('rc-terminal-interrupt','Ctrl+C')}${btn('rc-terminal-eof','Ctrl+D')}${btn('rc-terminal-cancel','Cancel session')}</div>
-          <p id="rc-terminal-status" class="rc-muted" role="status">Opening requires explicit interactive access in FDO settings. X11 is optional and separately authorized.</p>
-          <div id="rc-terminal-screen" hidden="hidden" aria-label="Remote interactive terminal"></div>
-          <p class="rc-muted">One terminal per view. Its target stays fixed when you select another VM. Output is not saved. Idle limit: 5 minutes; session limit: 1 hour. Close releases the channel without guaranteeing remote process termination.</p>
+        <section id="rc-console" class="rc-panel rc-output rc-stack" aria-labelledby="rc-console-title">
+          <header class="rc-row rc-between"><h2 id="rc-console-title">Console</h2><div class="rc-row" role="group" aria-label="Console view"><button id="rc-console-batch" type="button" class="pure-button" aria-pressed="true" aria-controls="rc-batch-panel">Batch output</button><button id="rc-console-terminal" type="button" class="pure-button" aria-pressed="false" aria-controls="rc-terminal-panel">Interactive terminal</button></div></header>
+          <div id="rc-batch-panel" role="region" aria-label="Batch output">
+            <div class="rc-row rc-console-actions">${btn('rc-cancel','Cancel run')}${btn('rc-copy-output','Copy')}${btn('rc-clear','Clear')}</div>
+            <div id="rc-running" hidden="hidden"><p id="rc-running-target" class="rc-muted"></p>${progress}<p class="rc-muted">Streaming stdout and stderr. Closing this view requests cancellation; remote termination requires confirmation from the host.</p></div>
+            <div id="rc-output"><p class="rc-muted">No execution results. Choose a VM, review a script, then run it explicitly.</p></div>
+          </div>
+          <div id="rc-terminal-panel" class="rc-stack" role="region" aria-label="Interactive terminal" hidden="hidden">
+            <div class="rc-row"><label>X11 forwarding<select id="rc-terminal-x11"><option value="off">Off</option><option value="untrusted">Untrusted (requires X SECURITY)</option><option value="trusted">Trusted (local display access)</option></select></label>${btn('rc-terminal-open','Open terminal',true)}${btn('rc-terminal-close','Close terminal')}</div>
+            <p id="rc-terminal-target" class="rc-review-target">No terminal connected.</p>
+            <div class="rc-row">${btn('rc-terminal-interrupt','Ctrl+C')}${btn('rc-terminal-eof','Ctrl+D')}${btn('rc-terminal-cancel','Cancel session')}</div>
+            <p id="rc-terminal-status" class="rc-muted" role="status">Open a shell or choose Interactive terminal in Execution mode to run a batch here. Interactive access and X11 need separate host authorization.</p>
+            <div id="rc-terminal-screen" hidden="hidden" aria-label="Remote interactive terminal"></div>
+            <p class="rc-muted">Switching console views keeps the session running on its labelled VM. Keyboard input goes only to the visible terminal; the remote PTY controls password echo. Output is not saved. Idle limit: 5 minutes; session limit: 1 hour. Untrusted X11 authorization expires after at most 5 minutes and closes the terminal. Close releases the channel without guaranteeing remote termination.</p>
+          </div>
         </section>
         ${limitations}
       </section>

@@ -12,7 +12,7 @@ export function initialState(): VMState {
 }
 
 export function placeholders(script: string): string[] {
-  return [...new Set([...script.matchAll(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g)].map(m => m[1]))];
+  return [...new Set([...script.matchAll(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g)].map(m => m[1]))];
 }
 
 /** Placeholders are explicit shell fragments, including their own quoting. Never execute in the UI. */
@@ -20,8 +20,8 @@ export function resolveScript(script: string, values: Record<string, string>, st
   if (!script.trim() || script.includes('\0') || script.length > 15000) throw new Error('Enter a script of 1–15000 characters without NUL characters.');
   const missing = placeholders(script).filter(key => !Object.hasOwn(values, key) || !values[key].trim());
   if (missing.length) throw new Error(`Fill template values: ${missing.join(', ')}.`);
-  const resolved = script.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g, (_, key: string) => values[key]);
-  if (/\{\{|\}\}/.test(resolved)) throw new Error('Unresolved or malformed template placeholders.');
+  const resolved = script.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g, (_, key: string) => values[key]);
+  if (/\{\{|}}/.test(resolved)) throw new Error('Unresolved or malformed template placeholders.');
   const result = (stopOnError ? 'set -e; ' : '') + resolved;
   if (result.length > 16384 || result.includes('\0')) throw new Error('Resolved script exceeds the SSH limit or contains NUL characters.');
   return result;
@@ -58,8 +58,16 @@ export function validateState(input: unknown): VMState {
   return {version: 1, selectedBatch: data.selectedBatch, batches, saved, timeout: data.timeout, captureBytes, stopOnError: data.stopOnError, values};
 }
 
-export function serviceMessage(error: unknown): string {
+export function serviceMessage(error: unknown, context?: 'batch' | 'terminal' | 'status'): string {
   const code = (error as {code?: string})?.code;
+  if (code === 'ACCESS_DENIED' && context) {
+    const policy = context === 'terminal'
+      ? 'Enable Interactive terminal access for this plugin’s selected VM in Settings → Credentials & SSH. The ssh.use, ssh.terminal.open, secrets.use and secrets.consume grants and profile interactive consent are all required. If X11 is selected, its grant and exact-mode profile consent are also required.'
+      : context === 'status'
+      ? 'Monitoring needs ssh.status.watch and command access for this VM profile; a terminal-only profile may still deny monitoring.'
+      : 'Enable command access for this plugin’s selected VM in Settings → Credentials & SSH. The host checks the entire resolved script, including set -e, against its command policy. Capability grants alone do not authorize that script. Interactive access is separate.';
+    return `SSH ${context} access denied. ${policy} No command was automatically retried.`;
+  }
   const messages: Record<string, string> = {
     ACCESS_DENIED: 'SSH access denied. Check this plugin’s capability grants and the profile’s command or interactive-access settings in FDO. Commands have not been automatically retried.',
     UNAVAILABLE: 'FDO SSH service is unavailable. Check that FDO uses SDK 1.8.3 and the required SSH host adapters are configured.',
@@ -72,9 +80,9 @@ export function serviceMessage(error: unknown): string {
     SESSION_CLOSED: 'The interactive session is closed. Open a new terminal explicitly to continue.',
     IDLE_TIMEOUT: 'The terminal reached its idle timeout and was closed. Remote processes may still be running.',
     SESSION_LIMIT: 'The host terminal session limit was reached. Close an unused session and try again.',
-    X11_UNSUPPORTED: 'The host does not support the requested X11 mode. Untrusted forwarding requires actual X SECURITY isolation; trusted forwarding was not substituted.',
+    X11_UNSUPPORTED: 'The local host/display cannot provide the requested X11 mode. Untrusted forwarding requires verified X SECURITY isolation. Use Check local X11 support in FDO settings; trusted forwarding was not substituted.',
     X11_UNAVAILABLE: 'X11 forwarding is unavailable. Configure a running local X server in FDO host settings.',
-    X11_AUTH_UNAVAILABLE: 'X11 authorization is unavailable. Check the local X server and host-owned xauth configuration.',
+    X11_AUTH_UNAVAILABLE: 'X11 authorization is unavailable, expired or revoked. Check local X11 support in FDO Settings → Credentials & SSH. Untrusted authorization lasts at most 5 minutes; no mode fallback or command retry occurred.',
     X11_FORWARDING_DENIED: 'X11 forwarding was denied. Check the exact mode’s profile consent and the remote SSH server configuration.',
     INVALID_REQUEST: 'The host rejected this SSH request. Check the resolved script, timeout, and host policy.',
   };

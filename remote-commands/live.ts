@@ -65,7 +65,7 @@ export function createLiveController(ssh: Pick<SSHClient, 'start' | 'watchStatus
           if (!feed.active || next.done) break;
           feed.observation = next.value;
         }
-      } catch (error) {if (feed.active) feed.error = `Status monitoring: ${serviceMessage(error)} Review the ssh.status.watch grant in FDO.`;}
+      } catch (error) {if (feed.active) feed.error = `Status monitoring: ${serviceMessage(error, 'status')} Review the ssh.status.watch grant in FDO.`;}
       finally {stop(feed);}
     })();
     return feed;
@@ -99,8 +99,8 @@ export function createLiveController(ssh: Pick<SSHClient, 'start' | 'watchStatus
         return {result: terminal.value, profileId: run.profileId, cancellation: run.cancellation};
       };
       return execute().catch(error => {
-        run.error = {code: (error as {code?: string})?.code, error: serviceMessage(error)};
-        throw Object.assign(new Error(serviceMessage(error)), {code: (error as {code?: string})?.code, output: {stdout: run.stdout, stderr: run.stderr}});
+        run.error = {code: (error as {code?: string})?.code, error: serviceMessage(error, 'batch')};
+        throw Object.assign(new Error(serviceMessage(error, 'batch')), {code: (error as {code?: string})?.code, output: {stdout: run.stdout, stderr: run.stderr}});
       }).finally(() => {run.done = true; activeRun = undefined;});
     },
     async sync(input: unknown) {

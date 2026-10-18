@@ -1,9 +1,9 @@
 import type {SSHClient, SSHTerminalSession, SSHTerminalOutput, SSHTerminalResult, SSHCancelResult} from '@anikitenko/fdo-sdk';
 import {serviceMessage} from './model.ts';
 
-type Entry = {id: string; viewId: string; profileId: string; touched: number; controller: AbortController; session?: SSHTerminalSession;
+type Entry = {id: string; viewId: string; profileId: string; mode: 'off' | 'trusted' | 'untrusted'; touched: number; controller: AbortController; session?: SSHTerminalSession;
   packet?: SSHTerminalOutput; acknowledge?: () => void; done: boolean; released: boolean; result?: SSHTerminalResult;
-  error?: {code: string; message: string}; cancellation?: SSHCancelResult; cancelRequested: boolean; cancelTask?: Promise<void>};
+  error?: {code: string; message: string}; cancellation?: SSHCancelResult; initializing: boolean; cancelRequested: boolean; cancelTask?: Promise<void>};
 
 /** One held packet per view: only renderer consumption allows another SDK read. No transcript. */
 export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, authorize: (id: string) => Promise<unknown>) {
@@ -18,7 +18,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
   };
   const fail = (entry: Entry, error: unknown) => {
     const code = (error as {code?: string})?.code ?? 'UNAVAILABLE';
-    entry.error = {code, message: serviceMessage({code})};
+    entry.error = {code, message: serviceMessage({code}, 'terminal') + (code === 'ACCESS_DENIED' ? ` Requested X11 mode: ${entry.mode}. ${entry.mode === 'off' ? 'X11 authorization is not used by this request.' : 'Trusted and untrusted mode consents are distinct; an X11 capability grant alone does not authorize this VM/mode.'}` : '')};
   };
   function release(entry: Entry) {
     entry.released = true; if (!entry.session) entry.controller.abort(); entry.packet = undefined; entry.acknowledge?.(); entry.acknowledge = undefined;
@@ -42,7 +42,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
   }, 1000);
   timer.unref?.();
   return {
-    terminalOpen(input: unknown) {
+    terminalOpen(input: unknown, launch?: string) {
       const value = data(input), viewId = key(value.viewId), profileId = key(value.profileId);
       const mode = value.mode;
       if (!['off', 'trusted', 'untrusted'].includes(mode as string)) throw new Error('Choose an X11 mode.');
@@ -50,7 +50,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
       const rows = dimension(value.rows), columns = dimension(value.columns);
       if (entries.has(viewId)) throw new Error('Close the current terminal before opening another.');
       if (entries.size >= 4) throw new Error('Close an unused terminal before opening another.');
-      const entry: Entry = {id: crypto.randomUUID(), viewId, profileId, touched: Date.now(), controller: new AbortController(), done: false, released: false, cancelRequested: false};
+      const entry: Entry = {id: crypto.randomUUID(), viewId, profileId, mode: mode as 'off' | 'trusted' | 'untrusted', touched: Date.now(), controller: new AbortController(), done: false, released: false, initializing: !!launch, cancelRequested: false};
       entries.set(viewId, entry);
       void (async () => {
         try {
@@ -70,13 +70,19 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
           const result = session.result.then(value => {entry.result = value;}, error => {fail(entry, error);});
           if (entry.released) {await session.close(); await result; return;}
           if (entry.cancelRequested) cancel(entry);
-          try {
-            for await (const packet of session.output) {
-              if (entry.released) break;
-              await new Promise<void>(resolve => {entry.acknowledge = resolve; entry.packet = packet;});
-            }
-          } catch (error) {fail(entry, error); void session.close().catch(() => {});}
-          await result;
+          const output = (async () => {
+            try {
+              for await (const packet of session.output) {
+                if (entry.released) break;
+                await new Promise<void>(resolve => {entry.acknowledge = resolve; entry.packet = packet;});
+              }
+            } catch (error) {fail(entry, error); void session.close().catch(() => {});}
+          })();
+          if (launch) {
+            try {await session.write(launch); entry.initializing = false;}
+            catch (error) {fail(entry, error); void session.close().catch(() => {});}
+          }
+          await Promise.all([result, output]);
         } catch (error) {fail(entry, error);}
         finally {entry.done = true; void entry.session?.close().catch(() => {});}
       })();
@@ -88,7 +94,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
       if (entry.packet && value.ack === entry.packet.sequence) {
         entry.packet = undefined; entry.acknowledge?.(); entry.acknowledge = undefined;
       } else if (entry.packet && (value.ack as number) >= entry.packet.sequence) throw new Error('Terminal acknowledgement is ahead of output.');
-      return {ready: !!entry.session && !entry.done && !entry.result && !entry.error, packet: entry.packet ? {sequence: entry.packet.sequence, bytes: Array.from(entry.packet.data)} : null,
+      return {ready: !!entry.session && !entry.initializing && !entry.done && !entry.result && !entry.error, packet: entry.packet ? {sequence: entry.packet.sequence, bytes: Array.from(entry.packet.data)} : null,
         done: entry.done, result: entry.result, error: entry.error, cancelRequested: entry.cancelRequested, cancellation: entry.cancellation};
     },
     async terminalInput(input: unknown) {

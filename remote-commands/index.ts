@@ -10,7 +10,7 @@ export default class RemoteCommandsPlugin extends FDO_SDK {
   declareCapabilities() {return [...createSSHCapabilityBundle({monitorStatus: true, terminal: true, x11: true}), 'storage', 'storage.json', 'system.clipboard.write'];}
   init(): void {
     const backend = createBackend(this.ssh, () => PluginRegistry.useStore('json'));
-    for (const name of ['bootstrap', 'save', 'prepare', 'start', 'sync', 'cancel', 'release', 'terminalOpen', 'terminalPoll', 'terminalInput', 'terminalResize', 'terminalCancel', 'terminalClose', 'terminalRelease'] as const) {
+    for (const name of ['bootstrap', 'save', 'prepare', 'start', 'sync', 'cancel', 'release', 'terminalOpen', 'terminalStart', 'terminalPoll', 'terminalInput', 'terminalResize', 'terminalCancel', 'terminalClose', 'terminalRelease'] as const) {
       PluginRegistry.registerHandler(`remote-commands.${name}`, async (data: unknown) => {
         try {return {ok: true, data: await (name === 'cancel' ? backend.requestCancel(data) : backend[name](data))};}
         catch (error) {

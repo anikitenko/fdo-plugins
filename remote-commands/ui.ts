@@ -8,6 +8,12 @@ import type {mountTerminal} from './terminal-ui.ts';
 export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: typeof mountTerminal; placeholders: (s: string) => string[]; describeProfile: typeof describeProfile; describeStatus: typeof describeStatus; formatPrivilegedError: (response: any, options: any) => string}) {
   const win = window as any;
   const byId = <T extends HTMLElement = HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
+  function showConsole(view: 'batch' | 'terminal') {
+    byId('rc-batch-panel').hidden = view !== 'batch';
+    byId('rc-terminal-panel').hidden = view !== 'terminal';
+    byId('rc-console-batch').setAttribute('aria-pressed', String(view === 'batch'));
+    byId('rc-console-terminal').setAttribute('aria-pressed', String(view === 'terminal'));
+  }
   const input = (id: string) => byId<HTMLInputElement>(id);
   const select = (id: string) => byId<HTMLSelectElement>(id);
   const area = byId<HTMLTextAreaElement>('rc-editor');
@@ -287,18 +293,28 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
   async function openReview(script: string) {
     if (!state() || busy) return;
     const profileId = current, settings = state();
+    const interactive = select('rc-run-mode').value === 'terminal';
+    const x11Mode = select('rc-terminal-x11').value;
+    let reviewedProfile = profiles.find(p => p.id === profileId)!;
     let label = profiles.find(p => p.id === profileId)!.label;
     const form = modal('Review remote execution');
     const destination = el('p', 'Resolving SSH destination…', 'rc-review-target');
     const trust = el('p', '', 'rc-muted rc-profile-trust');
-    form.append(destination, trust, el('p', `Timeout ${settings.timeout}s · capture ${settings.captureBytes / 1024} KiB · ${settings.stopOnError ? 'Stop on error: set -e' : 'Continue using the remote shell defaults'}`, 'rc-muted'));
+    form.append(destination, trust, el('p', `${interactive ? `Interactive PTY · X11 ${x11Mode} · ${x11Mode === 'untrusted' ? 'Untrusted X11 authorization: up to 5 minutes; expiry closes this terminal' : '5-minute idle / 1-hour session limits'}; output-only timeout and capture settings do not apply` : `Output-only · Timeout ${settings.timeout}s · capture ${settings.captureBytes / 1024} KiB`} · ${settings.stopOnError ? 'Stop on error: set -e' : 'Continue using the remote shell defaults'}`, 'rc-muted'));
     form.append(el('p', 'Template values are inserted verbatim as shell fragments. Include quotes where needed. Review the complete resolved script and destination before executing.', 'rc-muted'));
     const values = {...settings.values}; let token = '', revision = 0;
     const preview = el('pre', 'Resolve the commands to review the exact script.', 'rc-code');
     const feedback = el('p', '', 'rc-error'); feedback.setAttribute('role', 'alert');
     const execute = button('Execute on VM', async () => {
       if (!token || busy) return;
+      if (interactive) {
+        const reviewedToken = token; token = ''; execute.disabled = true;
+        await terminalView.startBatch(reviewedProfile, reviewedToken, x11Mode);
+        token = ''; execute.disabled = true; dialog.close();
+        byId('rc-console').scrollIntoView?.({block: 'nearest'}); return;
+      }
       const executionToken = token; token = ''; busy = true; execute.disabled = true; dialog.close();
+      showConsole('batch');
       const command = preview.textContent || '', started = Date.now();
       let resolve!: (value: any) => void, reject!: (error: Error) => void;
       const completion = new Promise<any>((yes, no) => {resolve = yes; reject = no;});
@@ -343,8 +359,9 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
     const resolve = async () => {
       const attempt = ++revision; token = ''; execute.disabled = true; feedback.textContent = '';
       try {
-        const review = await request('prepare', {profileId, script, values: {...values}, timeout: settings.timeout, stopOnError: settings.stopOnError, maxOutputBytes: settings.captureBytes});
+        const review = await request('prepare', {profileId, script, values: {...values}, timeout: settings.timeout, stopOnError: settings.stopOnError, maxOutputBytes: settings.captureBytes, executionMode: interactive ? 'terminal' : 'batch', x11Mode});
         if (!active || !dialog.open || attempt !== revision || !form.isConnected) return;
+        reviewedProfile = review.profile;
         const details = helpers.describeProfile(review.profile);
         label = `${review.label} · ${details.destination}`;
         destination.textContent = `${review.label} · ${details.destination} · profile ${review.profileId}`;
@@ -353,7 +370,7 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
         settings.values = {...values}; persist(profileId);
       } catch (e) {if (attempt === revision) {preview.textContent = 'Commands are not ready for execution.'; feedback.textContent = e instanceof Error ? e.message : String(e);}}
     };
-    form.append(button('Resolve commands', resolve), preview, feedback, el('p', 'Output streams live. Cancel or closing this view requests termination; only affirmative host evidence confirms the remote process stopped.', 'rc-muted'), execute, button('Copy resolved script', () => copyText(preview.textContent || '')), closeButton());
+    form.append(el('p', interactive ? 'This batch opens a new PTY and permits arbitrary keyboard input. Close any existing terminal first. Programs share one script shell; the terminal closes when the script exits. Interactive profile consent is required.' : 'Output-only execution has no keyboard input or terminal emulation. For editors, pagers or password prompts, choose Interactive terminal before reviewing.', 'rc-muted'), button('Resolve commands', resolve), preview, feedback, el('p', 'Output streams live. Cancel or closing this view requests termination; only affirmative host evidence confirms the remote process stopped.', 'rc-muted'), execute, button('Copy resolved script', () => copyText(preview.textContent || '')), closeButton());
     await resolve();
   }
   async function load() {
@@ -386,6 +403,8 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
     const id = (event.target as Element).closest('button')?.id;
     if (!id) return;
     Promise.resolve().then(async () => {
+      if (id === 'rc-console-batch') {showConsole('batch'); return;}
+      if (id === 'rc-console-terminal') {showConsole('terminal'); return;}
       if (id === 'rc-refresh') return load();
       if (id === 'rc-cancel' && execution && busy) {
         const run = execution; byId('rc-cancel').toggleAttribute('disabled', true);
@@ -441,7 +460,8 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
   });
   on(byId('rc-stop'), 'change', () => {if (state()) {state().stopOnError = input('rc-stop').checked; persist();}});
   on(window, 'beforeunload', (event) => {if (pending || failures.size || busy) {event.preventDefault();}});
-  disposers.push(helpers.mountTerminal(root, {viewId, request, profile: () => profiles.find(p => p.id === current), describeProfile: helpers.describeProfile}));
+  const terminalView = helpers.mountTerminal(root, {viewId, request, activate: () => showConsole('terminal'), profile: () => profiles.find(p => p.id === current), describeProfile: helpers.describeProfile});
+  disposers.push(terminalView.dispose);
   const liveTimer = window.setInterval(() => {drawConnection(); void syncLive();}, 250);
   disposers.push(() => window.clearInterval(liveTimer));
   void load();

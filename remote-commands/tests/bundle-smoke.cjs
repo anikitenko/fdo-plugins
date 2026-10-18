@@ -106,6 +106,16 @@ function configure() {
       assert.equal(computed(document.querySelector('.rc-layout')).gridTemplateColumns, '230px minmax(380px,1fr) 300px');
       assert.equal(computed(document.querySelector('.rc-panel')).padding, '16px');
       assert.equal(computed(document.querySelector('h1')).fontSize, '30px');
+      const consolePanel = document.querySelector('#rc-console');
+      assert.equal(document.querySelectorAll('#rc-console').length, 1);
+      assert.equal(consolePanel.contains(document.querySelector('#rc-output')), true);
+      assert.equal(consolePanel.contains(document.querySelector('#rc-terminal-screen')), true);
+      assert.equal(document.querySelector('#rc-terminal-panel').classList.contains('rc-panel'), false);
+      assert.equal(document.querySelector('#rc-terminal-panel').hidden, true);
+      assert.equal(document.querySelector('#rc-batch-panel').hidden, false);
+      assert.equal(document.querySelector('#rc-console-batch').getAttribute('aria-pressed'), 'true');
+      assert.equal(document.querySelector('#rc-console-terminal').getAttribute('aria-pressed'), 'false');
+      assert.equal(document.querySelectorAll('#rc-terminal-screen').length, 1);
       assert.equal(document.querySelector('#rc-workspace').hasAttribute('hidden'), true);
       // jsdom's cascade does not reliably honor !important over later rules.
       // Verify the browser's hidden-state contract through the actual CSSOM.

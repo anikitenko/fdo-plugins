@@ -442,3 +442,16 @@
 .shell #rc-terminal-target {
   margin: 0;
 }
+
+.shell #rc-console [aria-pressed=true] {
+  border-color: var(--rc-accent);
+  background: #217cf044;
+}
+
+.shell .rc-console-actions {
+  justify-content: flex-end;
+}
+
+.shell #rc-console header {
+  flex-shrink: 0;
+}

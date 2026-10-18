@@ -3,12 +3,12 @@ import type {describeProfile} from './profiles.ts';
 
 type Renderer = {write: (bytes: Uint8Array, consumed: () => void) => void; onData: (fn: (text: string) => void) => {dispose(): void};
   onResize: (fn: (size: {rows: number; columns: number}) => void) => {dispose(): void}; getSize(): {rows: number; columns: number}; focus(): void; reset(): void; dispose(): void};
-type SessionView = {id: string; generation: number; ready: boolean; ack: number; pending: number; bytes: number; tail: Promise<unknown>;
+type SessionView = {id: string; started: number; generation: number; ready: boolean; ack: number; pending: number; bytes: number; tail: Promise<unknown>;
   resize?: {rows: number; columns: number}; finished: boolean};
 
 /** Serialized callback. The host owns the emulator, PTY, X11 and credentials. */
 export function mountTerminal(root: HTMLElement, options: {viewId: string; request: (name: string, data: unknown) => Promise<any>;
-  profile: () => SSHProfileSummary | undefined; describeProfile: typeof describeProfile}) {
+  activate: () => void; profile: () => SSHProfileSummary | undefined; describeProfile: typeof describeProfile}) {
   const byId = <T extends HTMLElement = HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
   const screen = byId('rc-terminal-screen'), status = byId('rc-terminal-status'), target = byId('rc-terminal-target');
   const dialog = byId<HTMLDialogElement>('rc-terminal-review'), mode = byId<HTMLSelectElement>('rc-terminal-x11');
@@ -19,6 +19,9 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
   function controls() {
     byId<HTMLButtonElement>('rc-terminal-open').disabled = !!session;
     mode.disabled = !!session;
+    const viewButton = byId('rc-console-terminal');
+    viewButton.textContent = session ? 'Interactive terminal · active' : 'Interactive terminal';
+    viewButton.title = session ? target.textContent || 'Interactive session active' : 'Show interactive terminal';
     for (const id of ['rc-terminal-interrupt', 'rc-terminal-eof']) byId<HTMLButtonElement>(id).disabled = !session?.ready;
     byId<HTMLButtonElement>('rc-terminal-cancel').disabled = !session || session.finished;
     byId<HTMLButtonElement>('rc-terminal-close').disabled = !session;
@@ -32,7 +35,7 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
   }
   function queueInput(text: string) {
     const owner = session;
-    if (!owner?.ready || owner.finished) return;
+    if (!owner?.ready || owner.finished || byId('rc-terminal-panel').hidden) return;
     const bytes = new TextEncoder().encode(text).length;
     // Reject a paste before sending any prefix if the local queue cannot contain it.
     const chunks: string[] = [];
@@ -62,6 +65,7 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
     return renderer;
   }
   on('rc-terminal-open', () => {
+    options.activate();
     try {
       if (session) return;
       const profile = options.profile(); if (!profile) {report(new Error('Select an authorized VM first.')); return;}
@@ -72,32 +76,37 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
       byId('rc-terminal-review-trust').textContent = `Enrolled host key: ${options.describeProfile(profile).fingerprint}`;
       byId('rc-terminal-review-mode').textContent = mode.value === 'off' ? 'X11 forwarding is off.' : mode.value === 'trusted'
         ? 'Trusted X11 lets remote graphical programs access your local X display and potentially other applications’ input or data. Windows appear outside FDO. Separate host consent and a local X server are required.'
-        : 'Untrusted X11 requires enforced X SECURITY isolation. If unavailable, opening fails; it will not fall back to trusted forwarding.';
+        : 'Untrusted X11 uses host-verified X SECURITY isolation and requires separate untrusted-mode consent for this VM. Its authorization lasts up to 5 minutes; expiry closes this terminal and forwarding. Use Check local X11 support in FDO settings to verify local availability. If unavailable, opening fails; it will not fall back to trusted forwarding.';
       dialog.showModal();
     } catch (error) {report(error);}
   });
   on('rc-terminal-review-back', () => {reviewed = undefined; dialog.close();});
+  async function connect(review: {profile: SSHProfileSummary; mode: string}, batchToken?: string) {
+    if (session) throw new Error('Close the current terminal before running an interactive batch.');
+    const ownGeneration = ++generation;
+    options.activate();
+    try {
+      const terminal = ensureRenderer(); terminal.reset();
+      const owner: SessionView = {id: '', started: Date.now(), generation: ownGeneration, ready: false, ack: -1, pending: 0, bytes: 0, tail: Promise.resolve(), finished: false};
+      session = owner; controls(); status.classList.remove('rc-error'); status.textContent = 'Opening authorized interactive session…';
+      target.textContent = `${review.profile.label} · ${options.describeProfile(review.profile).destination} · X11 ${review.mode}`;
+      controls();
+      const opened = await options.request(batchToken ? 'terminalStart' : 'terminalOpen', {viewId: options.viewId, token: batchToken, profileId: review.profile.id, expectedProfile: review.profile, mode: review.mode, ...terminal.getSize()});
+      if (disposed || generation !== ownGeneration || session !== owner) {
+        await options.request('terminalClose', {viewId: options.viewId, id: opened.id}); return;
+      }
+      owner.id = opened.id; terminal.focus(); void poll();
+    } catch (error) {
+      if (generation === ownGeneration) {
+        report(error); await close(`${status.textContent} The open request was not retried.`);
+      }
+      throw error;
+    }
+  }
   on('rc-terminal-review-connect', () => {
     if (!reviewed || session) return;
     const review = reviewed; reviewed = undefined; dialog.close();
-    void (async () => {
-      const ownGeneration = ++generation;
-      try {
-        const terminal = ensureRenderer(); terminal.reset();
-        const owner: SessionView = {id: '', generation: ownGeneration, ready: false, ack: -1, pending: 0, bytes: 0, tail: Promise.resolve(), finished: false};
-        session = owner; controls(); status.classList.remove('rc-error'); status.textContent = 'Opening authorized interactive session…';
-        target.textContent = `${review.profile.label} · ${options.describeProfile(review.profile).destination} · X11 ${review.mode}`;
-        const opened = await options.request('terminalOpen', {viewId: options.viewId, profileId: review.profile.id, expectedProfile: review.profile, mode: review.mode, ...terminal.getSize()});
-        if (disposed || generation !== ownGeneration || session !== owner) {
-          await options.request('terminalClose', {viewId: options.viewId, id: opened.id}); return;
-        }
-        owner.id = opened.id; terminal.focus(); void poll();
-      } catch (error) {
-        if (generation === ownGeneration) {
-          report(error); void close(`${status.textContent} The open request was not retried.`);
-        }
-      }
-    })();
+    void connect(review).catch(report);
   });
   on('rc-terminal-close', () => {void close();});
   on('rc-terminal-interrupt', () => {queueInput('\x03'); renderer?.focus();});
@@ -137,8 +146,8 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
         : evidence?.remoteProcessStopped === false ? 'Host reports the remote shell was not stopped.' : 'Remote termination is unconfirmed.';
       if (state.done) {
         owner.ready = false; owner.finished = true; controls();
-        if (state.error) report(new Error(state.error.message));
-        else status.textContent = `Terminal ${state.result?.reason ?? 'closed'} · exit ${state.result?.exitCode ?? 'unknown'}${state.result?.signal ? ` · signal ${state.result.signal}` : ''}. ${termination}`;
+        if (state.error) report(new Error(`[${state.error.code}] ${state.error.message}`));
+        else status.textContent = `Terminal ${state.result?.reason ?? 'closed'} · exit ${state.result?.exitCode ?? 'unknown'} · ${Date.now() - owner.started} ms${state.result?.signal ? ` · signal ${state.result.signal}` : ''}. ${termination}`;
         // Preserve the screen, release the backend handle and permit an explicit new session.
         await options.request('terminalClose', {viewId: options.viewId, id: owner.id});
         if (session === owner) {session = undefined; controls();}
@@ -150,9 +159,9 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
   }
   const timer = window.setInterval(() => {void poll();}, 50);
   controls();
-  return () => {
+  return {startBatch: (profile: SSHProfileSummary, token: string, mode: string) => connect({profile, mode}, token), dispose: () => {
     if (disposed) return;
     disposed = true; window.clearInterval(timer); if (dialog.open) dialog.close();
     disposers.forEach(dispose => dispose()); void close(); renderer?.dispose();
-  };
+  }};
 }
