@@ -83,7 +83,7 @@ export function serviceMessage(error: unknown, context?: 'batch' | 'terminal' | 
     X11_UNSUPPORTED: 'The local host/display cannot provide the requested X11 mode. Untrusted forwarding requires verified X SECURITY isolation. Use Check local X11 support in FDO settings; trusted forwarding was not substituted.',
     X11_UNAVAILABLE: 'X11 forwarding is unavailable. Configure a running local X server in FDO host settings.',
     X11_AUTH_UNAVAILABLE: 'X11 authorization is unavailable, expired or revoked. Check local X11 support in FDO Settings → Credentials & SSH. Untrusted authorization lasts at most 5 minutes; no mode fallback or command retry occurred.',
-    X11_FORWARDING_DENIED: 'X11 forwarding was denied. Check the exact mode’s profile consent and the remote SSH server configuration.',
+    X11_FORWARDING_DENIED: 'SSH terminal negotiation failed with X11 requested, after host consent and local X11 preflight checks. The server may have rejected X11 forwarding, PTY allocation or shell startup; this code cannot distinguish them. Check the remote SSH server logs and effective X11Forwarding, DisableForwarding and XAuthLocation settings, remote xauth availability, and key/account restrictions. No mode fallback or automatic retry occurred.',
     INVALID_REQUEST: 'The host rejected this SSH request. Check the resolved script, timeout, and host policy.',
   };
   return code ? messages[code] ?? 'SSH service failed. Check FDO host settings.' : error instanceof Error ? error.message : 'Operation failed.';

@@ -19,7 +19,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
   };
   const fail = (entry: Entry, error: unknown) => {
     const code = (error as {code?: string})?.code ?? 'UNAVAILABLE';
-    entry.error = {code, message: serviceMessage({code}, 'terminal') + (code === 'ACCESS_DENIED' ? ` Requested X11 mode: ${entry.mode}. ${entry.mode === 'off' ? 'X11 authorization is not used by this request.' : 'Trusted and untrusted mode consents are distinct; an X11 capability grant alone does not authorize this VM/mode.'}` : '')};
+    entry.error = {code, message: serviceMessage({code}, 'terminal') + (code === 'ACCESS_DENIED' ? ` Requested X11 mode: ${entry.mode}. ${entry.mode === 'off' ? 'X11 authorization is not used by this request.' : 'Trusted and untrusted mode consents are distinct; an X11 capability grant alone does not authorize this VM/mode.'}` : code === 'X11_FORWARDING_DENIED' ? ` Requested X11 mode: ${entry.mode}.` : '')};
   };
   function release(entry: Entry) {
     entry.released = true; if (!entry.session) entry.controller.abort(); entry.packet = undefined; entry.acknowledge?.(); entry.acknowledge = undefined;

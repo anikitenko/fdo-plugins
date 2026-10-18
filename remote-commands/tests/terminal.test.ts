@@ -71,6 +71,26 @@ test('X11 modes pass through exactly, denied untrusted mode never opens a truste
   }
 });
 
+test('X11 negotiation denial identifies server checks without blaming consent or leaking provider details', async () => {
+  for (const mode of ['trusted', 'untrusted']) {
+    const f = fixture();
+    f.ssh.openTerminal = async options => {f.opens.push(options); throw {code: 'X11_FORWARDING_DENIED', message: '/private/xauth-cookie-secret'};};
+    const {id} = f.open(mode); await tick();
+    const state = f.controller.terminalPoll({viewId: 'view', id, ack: -1});
+    assert.equal(state.error!.code, 'X11_FORWARDING_DENIED');
+    const message = state.error!.message;
+    assert.match(message, /after host consent and local X11 preflight checks/);
+    assert.match(message, /PTY allocation or shell startup/);
+    assert.match(message, /remote SSH server logs/);
+    assert.ok(message.includes(`Requested X11 mode: ${mode}`));
+    assert.doesNotMatch(message, /profile consent|private|secret/);
+    assert.equal(f.opens.length, 1);
+    assert.deepEqual(f.opens[0].x11, {mode});
+    assert.equal(state.done, true);
+    f.controller.terminalClose({viewId: 'view', id});
+  }
+});
+
 test('released pending opens close late sessions and changed destination details prevent SSH opening', async () => {
   const f = fixture(), opening = deferred<SSHTerminalSession>(); let signal: AbortSignal | undefined;
   f.ssh.openTerminal = async (_options, abort) => {signal = abort; return opening.promise;};
