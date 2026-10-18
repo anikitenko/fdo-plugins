@@ -426,3 +426,19 @@
     transition: none !important;
   }
 }
+
+.shell #rc-terminal-screen {
+  height: 380px;
+  min-height: 240px;
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--rc-line);
+  border-radius: 5px;
+}
+
+.shell #rc-terminal-target {
+  margin: 0;
+}

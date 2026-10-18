@@ -61,13 +61,21 @@ export function validateState(input: unknown): VMState {
 export function serviceMessage(error: unknown): string {
   const code = (error as {code?: string})?.code;
   const messages: Record<string, string> = {
-    ACCESS_DENIED: 'SSH access denied. Check this plugin’s capability grants and the profile’s command-access settings in FDO. Commands have not been automatically retried.',
-    UNAVAILABLE: 'FDO SSH service is unavailable. Check that FDO uses SDK 1.8.2 and its live host adapters are configured.',
+    ACCESS_DENIED: 'SSH access denied. Check this plugin’s capability grants and the profile’s command or interactive-access settings in FDO. Commands have not been automatically retried.',
+    UNAVAILABLE: 'FDO SSH service is unavailable. Check that FDO uses SDK 1.8.3 and the required SSH host adapters are configured.',
     CANCELLED: 'Execution cancelled. Remote termination is unconfirmed unless the host provides affirmative evidence.',
     LOCKED: 'The FDO credential vault is locked. Unlock it in FDO and try again.',
     CONNECTION_FAILED: 'SSH connection or authentication failed. Check the VM is reachable and verify the user and credentials in the host profile.',
     HOST_KEY_REJECTED: 'SSH host key was rejected. Review the VM fingerprint through FDO’s trusted profile settings.',
     TIMEOUT: 'SSH execution timed out. Remote processes may still be running; inspect the VM before retrying.',
+    BACKPRESSURE: 'Terminal pressure limit reached. The session cannot continue losslessly; close it and reduce input or output volume before opening a new one.',
+    SESSION_CLOSED: 'The interactive session is closed. Open a new terminal explicitly to continue.',
+    IDLE_TIMEOUT: 'The terminal reached its idle timeout and was closed. Remote processes may still be running.',
+    SESSION_LIMIT: 'The host terminal session limit was reached. Close an unused session and try again.',
+    X11_UNSUPPORTED: 'The host does not support the requested X11 mode. Untrusted forwarding requires actual X SECURITY isolation; trusted forwarding was not substituted.',
+    X11_UNAVAILABLE: 'X11 forwarding is unavailable. Configure a running local X server in FDO host settings.',
+    X11_AUTH_UNAVAILABLE: 'X11 authorization is unavailable. Check the local X server and host-owned xauth configuration.',
+    X11_FORWARDING_DENIED: 'X11 forwarding was denied. Check the exact mode’s profile consent and the remote SSH server configuration.',
     INVALID_REQUEST: 'The host rejected this SSH request. Check the resolved script, timeout, and host policy.',
   };
   return code ? messages[code] ?? 'SSH service failed. Check FDO host settings.' : error instanceof Error ? error.message : 'Operation failed.';

@@ -2,8 +2,9 @@ import type {SSHClient, SSHProfileSummary, StoreWithLifecycle} from '@anikitenko
 import {initialState, resolveScript, serviceMessage, validateState} from './model.ts';
 import {publicProfile} from './profiles.ts';
 import {createLiveController} from './live.ts';
+import {createTerminalController} from './terminal.ts';
 
-export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'watchStatus'>, getStore: () => StoreWithLifecycle) {
+export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'watchStatus'> & Partial<Pick<SSHClient, 'openTerminal'>>, getStore: () => StoreWithLifecycle) {
   const reviews = new Map<string, {profileId: string; profile: SSHProfileSummary; command: string; timeoutMs: number; maxOutputBytes: number; expires: number}>();
   const record = (v: unknown): Record<string, any> => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('Provide an action payload.');
@@ -19,6 +20,10 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
     return publicProfile(profile);
   };
   const live = createLiveController(ssh, authorize);
+  const terminal = createTerminalController({openTerminal: (...args) => {
+    if (!ssh.openTerminal) return Promise.reject({code: 'UNAVAILABLE'});
+    return ssh.openTerminal(...args);
+  }}, authorize);
   function executeReview(input: unknown) {
     const data = record(input);
     if (typeof data.token !== 'string') throw new Error('Review the commands before running.');
@@ -35,6 +40,7 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
   }
 
   return {
+    ...terminal,
     run: async (input: unknown) => executeReview(input),
     start(input: unknown) {
       const task = executeReview(input);

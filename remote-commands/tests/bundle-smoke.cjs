@@ -19,9 +19,15 @@ const sdk = require('@anikitenko/fdo-sdk');
 const {PluginRegistry} = sdk;
 let executions = 0;
 function configure() {
-  PluginRegistry.configureCapabilities({granted: [...sdk.createSSHCapabilityBundle({monitorStatus: true}), 'storage', 'storage.json', 'system.clipboard.write']});
+  PluginRegistry.configureCapabilities({granted: [...sdk.createSSHCapabilityBundle({monitorStatus: true, terminal: true, x11: true}), 'storage', 'storage.json', 'system.clipboard.write']});
   PluginRegistry.configureStorage({rootDir: path.join(temp, 'storage')});
   PluginRegistry.configureHostServices({watchSSHStatus: async ({profileId}) => ({async *[Symbol.asyncIterator]() {yield {profileId, state: 'connected', checkedAt: new Date().toISOString(), staleAfterMs: 5000};}}),
+    openSSHTerminal: async options => {
+      assert.equal(options.x11.mode, 'untrusted');
+      return {output: {async *[Symbol.asyncIterator]() {yield {sequence: 0, data: Uint8Array.from([27, 91, 50, 74])};}},
+        result: Promise.resolve({reason: 'exited', exitCode: 0, signal: null, remoteProcessStopped: true}),
+        write: async () => {}, resize: async () => {}, endInput: async () => {}, close: async () => {}, cancel: async () => ({remoteProcessStopped: null})};
+    },
     startSSHExecution: async () => {executions++; return {events: {async *[Symbol.asyncIterator]() {yield {sequence: 0, stream: 'stdout', data: 'fixture output'};}}, result: Promise.resolve({stdout: 'fixture output', stderr: '', exitCode: 0, signal: null, durationMs: 5, truncated: false}), cancel: async () => ({remoteProcessStopped: null})};},
     request: async request => {
     if (request.action === 'ssh.profiles.list') return {profiles: [{id: 'fixture', label: 'Fixture VM', host: 'vm.example.test', port: 2222, username: 'ubuntu', authenticationType: 'privateKey', trustedHostKey: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}]};
@@ -61,6 +67,22 @@ function configure() {
       await new Promise(resolve => setTimeout(resolve, 5));
     }
     assert.equal(snapshot.data.output.result.exitCode, 0); assert.equal(snapshot.data.output.stdout, 'fixture output'); assert.equal(executions, 1);
+    assert.ok(new Plugin().declareCapabilities().includes('ssh.terminal.open'));
+    assert.ok(new Plugin().declareCapabilities().includes('ssh.x11.forward'));
+    const terminal = await PluginRegistry.callHandler('remote-commands.terminalOpen', {viewId: 'bundle-terminal', profileId: 'fixture', mode: 'untrusted', rows: 24, columns: 80});
+    assert.equal(terminal.ok, true);
+    const terminalRequest = {viewId: 'bundle-terminal', id: terminal.data.id, ack: -1};
+    let packet;
+    for (let i = 0; i < 50; i++) {
+      packet = await PluginRegistry.callHandler('remote-commands.terminalPoll', terminalRequest);
+      if (packet.data.packet) break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(packet.data.packet.bytes, [27, 91, 50, 74]);
+    const repeated = await PluginRegistry.callHandler('remote-commands.terminalPoll', terminalRequest);
+    assert.deepEqual(repeated.data.packet, packet.data.packet);
+    await PluginRegistry.callHandler('remote-commands.terminalPoll', {...terminalRequest, ack: 0});
+    await PluginRegistry.callHandler('remote-commands.terminalClose', terminalRequest);
     const rendered = PluginRegistry.callRenderer();
     const html = JSON.parse(rendered.render);
     const messages = [];

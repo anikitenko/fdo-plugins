@@ -1,5 +1,5 @@
 import {completedExecution, statusFeed, channel, deferred} from './fixtures.ts';
-import type {SSHExecResult, SSHOutputEvent} from '@anikitenko/fdo-sdk';
+import type {SSHTerminalSession, SSHTerminalOptions, SSHExecResult, SSHOutputEvent} from '@anikitenko/fdo-sdk';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
@@ -12,7 +12,7 @@ async function fixture() {
   const persisted = new Map<string, any>(), calls: any[] = [];
   const store = {get: (k: string) => persisted.get(k), set: (k: string, v: unknown) => {persisted.set(k, structuredClone(v));}, remove() {}, clear() {}, has: (k: string) => persisted.has(k), keys: () => [...persisted.keys()], flush: async () => {}};
   const profiles = [{id: 'dev', label: 'dev-api-01', host: '2001:db8::12', port: 2222, username: 'ubuntu', authenticationType: 'privateKey' as const, trustedHostKey: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}, {id: 'stage', label: 'staging-01'}];
-  const ssh = {start: async (options: any) => completedExecution(ssh.exec(options)), watchStatus: statusFeed, listProfiles: async () => profiles, exec: async (options: any) => {calls.push(options); return {stdout: '<output>\n', stderr: 'diagnostic\n', exitCode: 3, signal: null, durationMs: 27, truncated: true};}};
+  const ssh = {openTerminal: async (_options: SSHTerminalOptions): Promise<SSHTerminalSession> => {throw {code: 'UNAVAILABLE'};}, start: async (options: any) => completedExecution(ssh.exec(options)), watchStatus: statusFeed, listProfiles: async () => profiles, exec: async (options: any) => {calls.push(options); return {stdout: '<output>\n', stderr: 'diagnostic\n', exitCode: 3, signal: null, durationMs: 27, truncated: true};}};
   const backend = createBackend(ssh, () => store);
   const dom = new JSDOM(`<!doctype html><html><body>${renderRemoteCommands()}</body></html>`, {runScripts: 'outside-only', url: 'http://localhost/'});
   const win = dom.window;
@@ -173,4 +173,49 @@ test('selected text and saved Run require review; template edits invalidate appr
     assert.equal(f.$('dialog pre').textContent, 'set -e; echo saved'); await f.action('Cancel');
     assert.equal(f.calls.length, 1);
   } finally {f.dom.window.close();}
+});
+
+test('terminal UI requires explicit connect, acknowledges only consumed bytes and routes password input to its fixed VM', async () => {
+  const f = await fixture();
+  const events = channel<any>(), result = deferred<any>(), opened: SSHTerminalOptions[] = [], writes: string[] = [], rendered: number[][] = [];
+  let consume: (() => void) | undefined, keyboard: ((text: string) => void) | undefined, disposed = false, closes = 0;
+  f.win.FDOTerminal = {create: () => ({write: (data: Uint8Array, done: () => void) => {rendered.push([...data]); consume = done;},
+    onData: (fn: (text: string) => void) => {keyboard = fn; return {dispose() {}};}, onResize: () => ({dispose() {}}),
+    getSize: () => ({rows: 30, columns: 90}), focus() {}, reset() {}, dispose() {disposed = true;}})};
+  f.ssh.openTerminal = async options => {opened.push(options); return {output: events.iterator, result: result.promise,
+    write: async text => {writes.push(text as string);}, resize: async () => {}, endInput: async () => {}, cancel: async () => ({remoteProcessStopped: null}),
+    close: async () => {closes++; await events.close(); result.resolve({reason: 'closed', exitCode: null, signal: null, remoteProcessStopped: null});}};};
+  const wait = async () => {await new Promise(resolve => setTimeout(resolve, 120)); await f.settle();};
+  try {
+    f.$('#rc-terminal-x11').value = 'untrusted'; await f.click('#rc-terminal-open');
+    assert.equal(opened.length, 0); assert.match(f.$('#rc-terminal-review-mode').textContent, /will not fall back/);
+    await f.click('#rc-terminal-review-connect'); await wait();
+    assert.equal(opened.length, 1); assert.deepEqual(opened[0].x11, {mode: 'untrusted'});
+    events.push({sequence: 0, data: Uint8Array.from([27, 91, 50, 74, 0xf0, 0x9f])});
+    events.push({sequence: 1, data: Uint8Array.from([0x8c, 0x8d])}); await wait();
+    assert.equal(rendered.length, 1); await wait(); assert.equal(rendered.length, 1, 'no next packet until consumed');
+    consume!(); await wait(); assert.equal(rendered.length, 2); assert.deepEqual(rendered[1], [0x8c, 0x8d]); consume!();
+    await f.click('#rc-vms button:nth-child(2)');
+    assert.match(f.$('#rc-terminal-target').textContent, /dev-api-01/); assert.doesNotMatch(f.$('#rc-terminal-target').textContent, /staging/);
+    keyboard!('sudo vim notes.txt\r'); keyboard!('test-secret-password\r'); await wait();
+    assert.deepEqual(writes, ['sudo vim notes.txt\r', 'test-secret-password\r']);
+    assert.equal(JSON.stringify([...f.persisted.values()]).includes('test-secret-password'), false);
+    assert.doesNotMatch(f.$('#rc-terminal-screen').textContent, /test-secret-password/);
+    await f.click('#rc-terminal-interrupt'); await wait(); assert.equal(writes.at(-1), '\x03');
+    await f.click('#rc-terminal-cancel'); await wait(); assert.match(f.$('#rc-terminal-status').textContent, /unconfirmed/);
+    f.win.dispatchEvent(new f.win.Event('pagehide')); await f.settle(); assert.equal(disposed, true); assert.ok(closes >= 1);
+  } finally {f.dom.window.close();}
+});
+
+test('terminal does not open without a renderer and shows unsupported X11 without silently downgrading', async () => {
+  const f = await fixture(); let opens = 0;
+  try {
+    f.ssh.openTerminal = async () => {opens++; throw {code: 'X11_UNSUPPORTED'};};
+    await f.click('#rc-terminal-open'); assert.equal(opens, 0); assert.match(f.$('#rc-terminal-status').textContent, /renderer/);
+    f.win.FDOTerminal = {create: () => ({write() {}, onData: () => ({dispose() {}}), onResize: () => ({dispose() {}}), getSize: () => ({rows: 24, columns: 80}), focus() {}, reset() {}, dispose() {}})};
+    f.$('#rc-terminal-x11').value = 'untrusted'; await f.click('#rc-terminal-open'); await f.click('#rc-terminal-review-connect');
+    await new Promise(resolve => setTimeout(resolve, 200)); await f.settle();
+    assert.equal(opens, 1); assert.match(f.$('#rc-terminal-status').textContent, /Untrusted forwarding requires/);
+    assert.equal(f.$('#rc-terminal-x11').value, 'untrusted'); assert.equal(f.$('#rc-terminal-open').disabled, false);
+  } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); f.dom.window.close();}
 });

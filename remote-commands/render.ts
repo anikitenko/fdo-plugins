@@ -4,6 +4,7 @@ import {mountRemoteCommands} from './ui.ts';
 import {placeholders} from './model.ts';
 import {describeProfile} from './profiles.ts';
 import {describeStatus} from './status.ts';
+import {mountTerminal} from './terminal-ui.ts';
 
 export function renderRemoteCommands(): string {
   const dom = new DOM().collectStylesFrom();
@@ -34,13 +35,24 @@ export function renderRemoteCommands(): string {
           <div class="rc-row rc-between"><span id="rc-persistence" class="rc-muted" role="status"></span>${btn('rc-retry-save','Retry saving')}</div>
         </div>
         <section class="rc-panel rc-output"><header class="rc-row rc-between"><h2>Execution output</h2><div class="rc-row">${btn('rc-cancel','Cancel run')}${btn('rc-copy-output','Copy')}${btn('rc-clear','Clear')}</div></header><div id="rc-running" hidden="hidden"><p id="rc-running-target" class="rc-muted"></p>${progress}<p class="rc-muted">Streaming stdout and stderr. Closing this view requests cancellation; remote termination requires confirmation from the host.</p></div><div id="rc-output"><p class="rc-muted">No execution results. Choose a VM, review a script, then run it explicitly.</p></div></section>
+        <section id="rc-terminal-panel" class="rc-panel rc-stack" aria-label="Interactive SSH terminal">
+          <h2>Interactive terminal</h2>
+          <p class="rc-muted">Run interactive programs here, including editors, pagers, monitors, REPLs and sudo. Keyboard input goes to the connected VM; its terminal controls password echo. Batch buttons above run without interaction.</p>
+          <div class="rc-row"><label>X11 forwarding<select id="rc-terminal-x11"><option value="off">Off</option><option value="untrusted">Untrusted (requires X SECURITY)</option><option value="trusted">Trusted (local display access)</option></select></label>${btn('rc-terminal-open','Open terminal',true)}${btn('rc-terminal-close','Close terminal')}</div>
+          <p id="rc-terminal-target" class="rc-review-target">No terminal connected.</p>
+          <div class="rc-row">${btn('rc-terminal-interrupt','Ctrl+C')}${btn('rc-terminal-eof','Ctrl+D')}${btn('rc-terminal-cancel','Cancel session')}</div>
+          <p id="rc-terminal-status" class="rc-muted" role="status">Opening requires explicit interactive access in FDO settings. X11 is optional and separately authorized.</p>
+          <div id="rc-terminal-screen" hidden="hidden" aria-label="Remote interactive terminal"></div>
+          <p class="rc-muted">One terminal per view. Its target stays fixed when you select another VM. Output is not saved. Idle limit: 5 minutes; session limit: 1 hour. Close releases the channel without guaranteeing remote process termination.</p>
+        </section>
         ${limitations}
       </section>
       <aside class="rc-panel rc-saved rc-stack" aria-label="Saved commands for selected VM"><div class="rc-row rc-between"><h2>Saved for this VM</h2>${btn('rc-add-saved','+ Add')}</div><label class="rc-field">Search saved commands<input id="rc-saved-search" type="search" placeholder="Search commands…" /></label><label><input id="rc-favorites" type="checkbox" />Favorites only</label><div id="rc-saved"></div></aside>
     </div><dialog id="rc-dialog" aria-labelledby="rc-dialog-title"><div id="rc-dialog-body"></div></dialog>
+    <dialog id="rc-terminal-review" aria-labelledby="rc-terminal-review-title"><div class="rc-stack"><h2 id="rc-terminal-review-title">Open interactive SSH session</h2><p id="rc-terminal-review-target" class="rc-review-target"></p><p id="rc-terminal-review-trust" class="rc-muted"></p><p>Interactive access permits arbitrary commands without individual command reviews. Passwords typed into the remote terminal are not saved by this plugin.</p><p id="rc-terminal-review-mode"></p><div class="rc-row">${btn('rc-terminal-review-connect','Connect terminal',true)}${btn('rc-terminal-review-back','Back')}</div></div></dialog>
   </main>`);
 }
 
 export function renderRemoteCommandsOnLoad(): string {
-  return `(() => {const root = document.getElementById('remote-commands'); if (!root) return; if (root.__rcCleanup) root.__rcCleanup();root.__rcCleanup=(${mountRemoteCommands.toString()})(root, {placeholders: ${placeholders.toString()}, describeProfile: ${describeProfile.toString()}, describeStatus: ${describeStatus.toString()}, formatPrivilegedError: ${getInlinePrivilegedActionErrorFormatterSource()}});})();`;
+  return `(() => {const root = document.getElementById('remote-commands'); if (!root) return; if (root.__rcCleanup) root.__rcCleanup();root.__rcCleanup=(${mountRemoteCommands.toString()})(root, {placeholders: ${placeholders.toString()}, describeProfile: ${describeProfile.toString()}, describeStatus: ${describeStatus.toString()}, mountTerminal: ${mountTerminal.toString()}, formatPrivilegedError: ${getInlinePrivilegedActionErrorFormatterSource()}});})();`;
 }
