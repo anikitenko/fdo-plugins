@@ -1,6 +1,6 @@
 export type Batch = { id: string; name: string; script: string; draft: string };
 export type SavedCommand = { id: string; name: string; script: string; description: string; tags: string[]; favorite: boolean };
-export type VMState = { version: 1; selectedBatch: string; batches: Batch[]; saved: SavedCommand[]; timeout: number; stopOnError: boolean; values: Record<string, string> };
+export type VMState = { version: 1; selectedBatch: string; batches: Batch[]; saved: SavedCommand[]; timeout: number; captureBytes: number; stopOnError: boolean; values: Record<string, string> };
 
 export function initialState(): VMState {
   const batches = [
@@ -8,7 +8,7 @@ export function initialState(): VMState {
     {id: 'docker', name: 'Docker inspection', script: '# Example template — requires Docker\ndocker ps\ndocker inspect {{container}}'},
     {id: 'logs', name: 'Service logs', script: '# Example template — requires systemd\njournalctl -u {{service}} -n 100 --no-pager\n# Optional file logs:\n# tail -n 100 {{log_path}}'},
   ].map(b => ({...b, draft: b.script}));
-  return {version: 1, selectedBatch: 'health', batches, saved: [], timeout: 60, stopOnError: true, values: {}};
+  return {version: 1, selectedBatch: 'health', batches, saved: [], timeout: 60, captureBytes: 1048576, stopOnError: true, values: {}};
 }
 
 export function placeholders(script: string): string[] {
@@ -48,19 +48,22 @@ export function validateState(input: unknown): VMState {
   for (const list of [batches, saved]) if (new Set(list.map(i => i.id)).size !== list.length) throw new Error('Duplicate item IDs.');
   if (!batches.some(b => b.id === data.selectedBatch)) throw new Error('Selected batch is missing.');
   if (!Number.isInteger(data.timeout) || data.timeout < 1 || data.timeout > 120 || typeof data.stopOnError !== 'boolean') throw new Error('Timeout must be 1–120 seconds.');
+  const captureBytes = data.captureBytes ?? 1048576;
+  if (!Number.isSafeInteger(captureBytes) || captureBytes < 1024 || captureBytes > 16777216 || captureBytes % 1024 !== 0) throw new Error('Capture must be 1–16384 KiB.');
   const values = Object.fromEntries(Object.entries(obj(data.values)).map(([k, v]) => {
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(k)) throw new Error('Invalid placeholder name.');
     return [k, str(v, 4000, true)];
   }));
   if (Object.keys(values).length > 100 || JSON.stringify(input).length > 4_000_000) throw new Error('Saved state is too large.');
-  return {version: 1, selectedBatch: data.selectedBatch, batches, saved, timeout: data.timeout, stopOnError: data.stopOnError, values};
+  return {version: 1, selectedBatch: data.selectedBatch, batches, saved, timeout: data.timeout, captureBytes, stopOnError: data.stopOnError, values};
 }
 
 export function serviceMessage(error: unknown): string {
   const code = (error as {code?: string})?.code;
   const messages: Record<string, string> = {
-    ACCESS_DENIED: 'SSH access denied. Authorize this plugin, its profile, and the exact reviewed script in FDO. The current host settings form accepts one-line allowlist entries only; multiline scripts require host policy support for whole-script entries. Commands have not been automatically retried.',
-    UNAVAILABLE: 'FDO SSH service is unavailable. Check that the host supports SDK 1.8 SSH services and has configured its backend transport.',
+    ACCESS_DENIED: 'SSH access denied. Check this plugin’s capability grants and the profile’s command-access settings in FDO. Commands have not been automatically retried.',
+    UNAVAILABLE: 'FDO SSH service is unavailable. Check that FDO uses SDK 1.8.2 and its live host adapters are configured.',
+    CANCELLED: 'Execution cancelled. Remote termination is unconfirmed unless the host provides affirmative evidence.',
     LOCKED: 'The FDO credential vault is locked. Unlock it in FDO and try again.',
     CONNECTION_FAILED: 'SSH connection or authentication failed. Check the VM is reachable and verify the user and credentials in the host profile.',
     HOST_KEY_REJECTED: 'SSH host key was rejected. Review the VM fingerprint through FDO’s trusted profile settings.',

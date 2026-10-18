@@ -6,7 +6,7 @@ import {initialState} from '../model.ts';
 test('render and onload use SDK UI, host capability messaging, accessible controls and responsive layouts', () => {
   const html = renderRemoteCommands();
   assert.match(html, /fdo.inline-alert/); assert.match(html, /fdo.progress-bar/); assert.match(html, /fdo.disclosure/);
-  assert.match(html, /aria-label="Shell script"/); assert.match(html, /Live streaming, cancellation/);
+  assert.match(html, /aria-label="Shell script"/); assert.match(html, /Output streams live/);
   assert.match(html, /@media\s*\(max-width:\s*720px\)/); assert.match(html, /prefers-reduced-motion/);
   const shellClass = /<main id="remote-commands" class="([\w-]+)"/.exec(html)?.[1];
   assert.ok(shellClass, 'the root carries its SDK-generated style class');

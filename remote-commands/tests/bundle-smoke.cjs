@@ -19,10 +19,12 @@ const sdk = require('@anikitenko/fdo-sdk');
 const {PluginRegistry} = sdk;
 let executions = 0;
 function configure() {
-  PluginRegistry.configureCapabilities({granted: [...sdk.createSSHCapabilityBundle(), 'storage', 'storage.json', 'system.clipboard.write']});
+  PluginRegistry.configureCapabilities({granted: [...sdk.createSSHCapabilityBundle({monitorStatus: true}), 'storage', 'storage.json', 'system.clipboard.write']});
   PluginRegistry.configureStorage({rootDir: path.join(temp, 'storage')});
-  PluginRegistry.configureHostServices({request: async request => {
-    if (request.action === 'ssh.profiles.list') return {profiles: [{id: 'fixture', label: 'Fixture VM'}]};
+  PluginRegistry.configureHostServices({watchSSHStatus: async ({profileId}) => ({async *[Symbol.asyncIterator]() {yield {profileId, state: 'connected', checkedAt: new Date().toISOString(), staleAfterMs: 5000};}}),
+    startSSHExecution: async () => {executions++; return {events: {async *[Symbol.asyncIterator]() {yield {sequence: 0, stream: 'stdout', data: 'fixture output'};}}, result: Promise.resolve({stdout: 'fixture output', stderr: '', exitCode: 0, signal: null, durationMs: 5, truncated: false}), cancel: async () => ({remoteProcessStopped: null})};},
+    request: async request => {
+    if (request.action === 'ssh.profiles.list') return {profiles: [{id: 'fixture', label: 'Fixture VM', host: 'vm.example.test', port: 2222, username: 'ubuntu', authenticationType: 'privateKey', trustedHostKey: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}]};
     if (request.action === 'ssh.exec') {executions++; return {stdout: 'fixture output', stderr: '', exitCode: 0, signal: null, durationMs: 5, truncated: false};}
     throw new Error('Unexpected service request');
   }});
@@ -34,6 +36,8 @@ function configure() {
     PluginRegistry.callInit();
     let response = await PluginRegistry.callHandler('remote-commands.bootstrap', {});
     assert.equal(response.ok, true); assert.equal(response.data.profiles[0].id, 'fixture'); assert.deepEqual(response.data.warnings, []);
+    assert.equal(response.data.profiles[0].host, 'vm.example.test');
+    assert.equal(response.data.profiles[0].username, 'ubuntu');
     const state = response.data.states.fixture;
     state.batches[0].draft = 'cd /tmp\nexport TEST=preserved\nprintf "$TEST"';
     state.selectedBatch = 'logs';
@@ -47,8 +51,16 @@ function configure() {
     assert.equal(response.data.states.fixture.batches[0].draft, state.batches[0].draft);
     const review = await PluginRegistry.callHandler('remote-commands.prepare', {profileId: 'fixture', script: 'uptime', values: {}, timeout: 10, stopOnError: true});
     assert.equal(executions, 0); assert.equal(review.data.command, 'set -e; uptime');
-    const execution = await PluginRegistry.callHandler('remote-commands.run', {token: review.data.token});
-    assert.equal(execution.data.result.exitCode, 0); assert.equal(executions, 1);
+    assert.ok(new Plugin().declareCapabilities().includes('ssh.status.watch'));
+    const started = await PluginRegistry.callHandler('remote-commands.start', {token: review.data.token, viewId: 'bundle-view', runId: 'bundle-run'});
+    assert.equal(started.data.started, true);
+    let snapshot;
+    for (let i = 0; i < 50; i++) {
+      snapshot = await PluginRegistry.callHandler('remote-commands.sync', {viewId: 'bundle-view', profileId: 'fixture', runId: 'bundle-run'});
+      if (snapshot.data.output?.done) break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(snapshot.data.output.result.exitCode, 0); assert.equal(snapshot.data.output.stdout, 'fixture output'); assert.equal(executions, 1);
     const rendered = PluginRegistry.callRenderer();
     const html = JSON.parse(rendered.render);
     const messages = [];

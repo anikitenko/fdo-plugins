@@ -147,7 +147,7 @@
 }
 
 .shell input[type=number] {
-  width: 78px;
+  width: 90px;
 }
 
 .shell input[type=checkbox] {
@@ -222,6 +222,15 @@
   color: var(--rc-muted);
   font-size: 12px;
   margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.shell #rc-profile-details {
+  margin-top: 10px;
+}
+
+.shell #rc-vm-fingerprint {
+  font-family: ui-monospace,SFMono-Regular,Consolas,monospace;
 }
 
 .shell .rc-batch-picker {
@@ -368,6 +377,11 @@
 .shell .rc-review-target {
   color: #79b8ff;
   font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.shell .rc-profile-trust {
+  overflow-wrap: anywhere;
 }
 
 .shell .rc-danger {

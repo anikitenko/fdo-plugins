@@ -17,6 +17,6 @@
     "verify": "npm run typecheck && npm run test:host && npm run test:dom && npm run build && npm run test:deployment"
   },
   "engines": { "node": ">=22.18" },
-  "dependencies": { "@anikitenko/fdo-sdk": "^1.8.0" },
+  "dependencies": { "@anikitenko/fdo-sdk": "^1.8.2" },
   "devDependencies": { "@types/node": "^22.0.0", "esbuild": "^0.25.0", "jsdom": "^27.4.0", "typescript": "^5.9.3" }
 }

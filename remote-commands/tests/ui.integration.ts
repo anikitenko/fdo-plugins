@@ -1,3 +1,5 @@
+import {completedExecution, statusFeed, channel, deferred} from './fixtures.ts';
+import type {SSHExecResult, SSHOutputEvent} from '@anikitenko/fdo-sdk';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
@@ -9,18 +11,23 @@ const {JSDOM} = createRequire(import.meta.url)('jsdom');
 async function fixture() {
   const persisted = new Map<string, any>(), calls: any[] = [];
   const store = {get: (k: string) => persisted.get(k), set: (k: string, v: unknown) => {persisted.set(k, structuredClone(v));}, remove() {}, clear() {}, has: (k: string) => persisted.has(k), keys: () => [...persisted.keys()], flush: async () => {}};
-  const profiles = [{id: 'dev', label: 'dev-api-01'}, {id: 'stage', label: 'staging-01'}];
-  const ssh = {listProfiles: async () => profiles, exec: async (options: any) => {calls.push(options); return {stdout: '<output>\n', stderr: 'diagnostic\n', exitCode: 3, signal: null, durationMs: 27, truncated: true};}};
+  const profiles = [{id: 'dev', label: 'dev-api-01', host: '2001:db8::12', port: 2222, username: 'ubuntu', authenticationType: 'privateKey' as const, trustedHostKey: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}, {id: 'stage', label: 'staging-01'}];
+  const ssh = {start: async (options: any) => completedExecution(ssh.exec(options)), watchStatus: statusFeed, listProfiles: async () => profiles, exec: async (options: any) => {calls.push(options); return {stdout: '<output>\n', stderr: 'diagnostic\n', exitCode: 3, signal: null, durationMs: 27, truncated: true};}};
   const backend = createBackend(ssh, () => store);
   const dom = new JSDOM(`<!doctype html><html><body>${renderRemoteCommands()}</body></html>`, {runScripts: 'outside-only', url: 'http://localhost/'});
   const win = dom.window;
   win.HTMLDialogElement.prototype.showModal = function() {this.open = true;};
   win.HTMLDialogElement.prototype.close = function() {this.open = false;};
-  win.createBackendReq = async (type: string, payload: any) => {
+  let bridgeTail = Promise.resolve();
+  win.createBackendReq = (type: string, payload: any) => {
+    const response = bridgeTail.then(async () => {
     if (type === 'requestPrivilegedAction') return {ok: true};
     const name = payload.handler.replace('remote-commands.', '');
     if (name === 'copy') return {action: 'system.clipboard.write', payload: {text: payload.content.text}};
-    try {return structuredClone({ok: true, data: await (backend as any)[name](payload.content)});} catch (e) {return {ok: false, error: serviceMessage(e)};}
+    try {return structuredClone({ok: true, data: await (backend as any)[name === 'cancel' ? 'requestCancel' : name](payload.content)});} catch (e) {return {ok: false, error: name === 'save' ? 'Could not persist changes. Your draft is retained. Check FDO diagnostics and retry saving.' : serviceMessage(e), code: (e as {code?: string}).code, output: (e as {output?: unknown}).output};}
+    });
+    bridgeTail = response.then(() => {}, () => {});
+    return response;
   };
   win.eval(renderRemoteCommandsOnLoad());
   const $ = (selector: string) => win.document.querySelector(selector);
@@ -32,8 +39,68 @@ async function fixture() {
     const b = buttons.find((b: any) => b.textContent === label) as any; assert.ok(b, label); b.click(); await settle();
   };
   await settle();
-  return {dom, win, $, settle, click, type, action, calls, persisted, backend};
+  return {dom, win, $, settle, click, type, action, calls, persisted, backend, profiles, ssh, store};
 }
+
+test('UI streams output before completion, cancels honestly, retains partial output and keeps SSH status independent', async () => {
+  const f = await fixture(), events = channel<SSHOutputEvent>(), terminal = deferred<SSHExecResult>();
+  f.ssh.start = async options => {f.calls.push(options); return {events: events.iterator, result: terminal.promise,
+    cancel: async () => {await events.close(); terminal.reject({code: 'CANCELLED'}); return {remoteProcessStopped: null};}};};
+  try {
+    await f.type('#rc-capture', '4096'); f.$('#rc-capture').dispatchEvent(new f.win.Event('change')); await f.settle();
+    await f.type('#rc-editor', 'echo live'); await f.click('#rc-run');
+    assert.match(f.$('dialog').textContent, /capture 4096 KiB/); await f.action('Execute on VM');
+    events.push({sequence: 0, stream: 'stdout', data: 'hello 🌍'}); events.push({sequence: 1, stream: 'stderr', data: '<warning>'});
+    await new Promise(resolve => setTimeout(resolve, 300)); await f.settle();
+    assert.match(f.$('#rc-output').textContent, /Running/); assert.match(f.$('#rc-output').textContent, /hello 🌍/);
+    assert.match(f.$('#rc-output').textContent, /<warning>/); assert.equal(f.$('#rc-output warning'), null);
+    assert.equal(f.$('#rc-connection').textContent, 'SSH connected'); assert.match(f.$('#rc-status-time').textContent, /Observed.*fresh/);
+    assert.equal(f.calls[0].maxOutputBytes, 4194304); assert.equal(f.$('#rc-cancel').disabled, false);
+    await f.click('#rc-cancel'); await new Promise(resolve => setTimeout(resolve, 300)); await f.settle();
+    assert.match(f.$('#rc-output').textContent, /Cancelled/); assert.match(f.$('#rc-output').textContent, /termination is unconfirmed/);
+    assert.equal(f.$('#rc-output').textContent.split('hello 🌍').length - 1, 1);
+    assert.equal(f.$('#rc-connection').textContent, 'SSH connected'); assert.equal(f.calls.length, 1);
+  } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); f.dom.window.close();}
+});
+
+test('UI retains unsaved drafts and retries persistence after the flush barrier fails', async () => {
+  const f = await fixture();
+  try {
+    f.store.flush = async () => {throw new Error('/private/sensitive-disk-path');};
+    await f.type('#rc-editor', 'echo keep-my-draft');
+    assert.match(f.$('#rc-persistence').textContent, /not persisted/);
+    assert.equal(f.$('#rc-editor').value, 'echo keep-my-draft');
+    assert.doesNotMatch(f.$('#rc-message').textContent, /sensitive-disk-path/);
+    assert.equal(f.$('#rc-retry-save').hidden, false);
+    f.store.flush = async () => {}; await f.click('#rc-retry-save');
+    assert.match(f.$('#rc-persistence').textContent, /persisted by FDO/);
+    assert.equal(f.$('#rc-retry-save').hidden, true);
+    assert.equal(f.persisted.get('vm:dev').batches[0].draft, 'echo keep-my-draft');
+  } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); f.dom.window.close();}
+});
+
+test('shows and searches public SSH metadata, reviews the resolved destination and resets missing fields between VMs', async () => {
+  const f = await fixture();
+  try {
+    assert.equal(f.$('#rc-vm-address').textContent, '[2001:db8::12]:2222');
+    assert.equal(f.$('#rc-vm-user').textContent, 'ubuntu');
+    assert.equal(f.$('#rc-vm-auth').textContent, 'Private key');
+    assert.equal(f.$('#rc-vm-fingerprint').textContent, 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+    for (const query of ['2001:db8', 'ubuntu', '2222']) {
+      await f.type('#rc-vm-search', query); assert.equal(f.win.document.querySelectorAll('#rc-vms button').length, 1);
+    }
+    await f.type('#rc-editor', 'uptime'); await f.click('#rc-run');
+    assert.match(f.$('dialog .rc-review-target').textContent, /ubuntu@\[2001:db8::12\]:2222/);
+    assert.match(f.$('dialog .rc-profile-trust').textContent, /Private key.*SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/);
+    assert.equal(f.calls.length, 0); await f.action('Cancel');
+    await f.type('#rc-vm-search', ''); await f.click('#rc-vms button:nth-child(2)');
+    for (const id of ['rc-vm-address', 'rc-vm-user', 'rc-vm-auth', 'rc-vm-fingerprint']) assert.equal(f.$(`#${id}`).textContent, 'Not supplied by host');
+    await f.click('#rc-vms button:first-child');
+    f.profiles[0].username = 'deploy'; await f.click('#rc-refresh');
+    assert.equal(f.$('#rc-vm-user').textContent, 'deploy'); assert.equal(f.calls.length, 0);
+    assert.equal(JSON.stringify([...f.persisted.values()]).includes('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'), false);
+  } finally {f.dom.window.close();}
+});
 
 test('serialized iframe UI switches per-VM batch drafts instantly and restores them after reload', async () => {
   const f = await fixture();
@@ -96,6 +163,7 @@ test('selected text and saved Run require review; template edits invalidate appr
     await f.type('dialog [aria-label="Template service"]', 'redis'); assert.ok(f.$('dialog button.rc-primary').disabled);
     await f.action('Resolve commands'); await f.action('Execute on VM');
     assert.equal(f.calls.length, 1); assert.equal(f.calls[0].command, 'set -e; echo redis');
+    await new Promise(resolve => setTimeout(resolve, 300)); await f.settle();
     assert.match(f.$('#rc-output').textContent, /Failed · exit 3/); assert.match(f.$('#rc-output').textContent, /TRUNCATED/);
     assert.match(f.$('#rc-output').textContent, /<output>/); assert.equal(f.$('#rc-output output'), null);
     await f.click('#rc-add-saved'); await f.type('dialog [aria-label="Name"]', 'Service'); await f.type('dialog textarea', 'echo saved'); await f.action('Save command');
@@ -106,4 +174,3 @@ test('selected text and saved Run require review; template edits invalidate appr
     assert.equal(f.calls.length, 1);
   } finally {f.dom.window.close();}
 });
-

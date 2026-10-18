@@ -1,20 +1,26 @@
 import type {SavedCommand, VMState} from './model.ts';
+import type {SSHProfileSummary} from '@anikitenko/fdo-sdk';
+import type {describeProfile} from './profiles.ts';
+import type {describeStatus, MonitorSnapshot} from './status.ts';
 
 /** Self-contained iframe callback: imports are types only; all dependencies are injected. */
-export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (s: string) => string[]; formatPrivilegedError: (response: any, options: any) => string}) {
+export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (s: string) => string[]; describeProfile: typeof describeProfile; describeStatus: typeof describeStatus; formatPrivilegedError: (response: any, options: any) => string}) {
   const win = window as any;
-  const $ = <T extends HTMLElement = HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
-  const input = (id: string) => $<HTMLInputElement>(id);
-  const select = (id: string) => $<HTMLSelectElement>(id);
-  const area = $<HTMLTextAreaElement>('rc-editor');
-  const dialog = $<HTMLDialogElement>('rc-dialog');
-  let profiles: {id: string; label: string}[] = [];
+  const byId = <T extends HTMLElement = HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
+  const input = (id: string) => byId<HTMLInputElement>(id);
+  const select = (id: string) => byId<HTMLSelectElement>(id);
+  const area = byId<HTMLTextAreaElement>('rc-editor');
+  const dialog = byId<HTMLDialogElement>('rc-dialog');
+  let profiles: SSHProfileSummary[] = [];
   let states: Record<string, VMState> = Object.create(null);
   let current = '', active = true, loading = false, busy = false, ace: any = null, settingEditor = false;
   let generation = 0, saveQueue = Promise.resolve(), pending = 0;
   const failures = new Set<string>();
-  const output = new Map<string, {command: string; status: string; stdout: string; stderr: string; details: string}>();
+  const output = new Map<string, {command: string; status: string; stdout: string; stderr: string; details: string; termination?: string}>();
   const connections = new Map<string, string>();
+  const viewId = crypto.randomUUID();
+  let monitor: MonitorSnapshot | null = null, monitoredProfile = '', lastSync = 0, syncing = false;
+  let execution: {runId: string; profileId: string; stdoutOffset: number; stderrOffset: number; started: number; done: boolean; resolve: (value: any) => void; reject: (error: Error) => void} | null = null;
   const disposers: (() => void)[] = [];
   const on = (node: EventTarget, event: string, fn: EventListener) => {node.addEventListener(event, fn); disposers.push(() => node.removeEventListener(event, fn));};
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = '') => {const n = document.createElement(tag); n.textContent = text; n.className = cls; return n;};
@@ -26,13 +32,13 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
     const text = e instanceof Error ? e.message : String(e);
     if (dialog.open) {
       let feedback = dialog.querySelector<HTMLElement>('#rc-dialog-error');
-      if (!feedback) {feedback = el('p', '', 'rc-error'); feedback.id = 'rc-dialog-error'; feedback.setAttribute('role', 'alert'); $('rc-dialog-body').append(feedback);}
+      if (!feedback) {feedback = el('p', '', 'rc-error'); feedback.id = 'rc-dialog-error'; feedback.setAttribute('role', 'alert'); byId('rc-dialog-body').append(feedback);}
       feedback.textContent = text;
     } else message(text, true);
   };
   const message = (text: string, error = false) => {
     if (!active) return;
-    const box = $('rc-message'); box.hidden = !text; box.dataset.fdoVariant = error ? 'error' : 'info'; box.setAttribute('role', error ? 'alert' : 'status');
+    const box = byId('rc-message'); box.hidden = !text; box.dataset.fdoVariant = error ? 'error' : 'info'; box.setAttribute('role', error ? 'alert' : 'status');
     box.querySelector('[data-fdo-slot="message"]')!.textContent = text;
   };
   async function rawRequest(handler: string, content: unknown) {
@@ -43,17 +49,66 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
   }
   async function request(handler: string, content: unknown = {}) {
     const response = await rawRequest(handler, content);
-    if (!response?.ok) throw new Error(response?.error || 'FDO did not return a valid response.');
+    if (!response?.ok) throw Object.assign(new Error(response?.error || 'FDO did not return a valid response.'), {code: response?.code, output: response?.output});
     return response.data;
   }
   const state = () => states[current];
   const batch = () => state()?.batches.find(b => b.id === state().selectedBatch);
   const uid = () => crypto.randomUUID();
+  function connectionStatus(profileId: string) {
+    if (profileId !== monitoredProfile) return {label: 'Not monitored', detail: 'Select this VM to monitor SSH reachability.', tone: ''};
+    return helpers.describeStatus(Date.now() - lastSync > 3000 ? null : monitor);
+  }
+  function drawConnection() {
+    if (!active) return;
+    const status = connectionStatus(current);
+    byId('rc-connection').textContent = status.label;
+    byId('rc-connection').className = `rc-muted ${status.tone}`;
+    byId('rc-status-time').textContent = status.detail;
+    // Update existing cards without replacing focused controls every poll.
+    for (const card of root.querySelectorAll<HTMLElement>('#rc-vms [data-profile-id]')) {
+      const details = connectionStatus(card.dataset.profileId!);
+      card.querySelector<HTMLElement>('[data-live-status]')!.textContent = details.label;
+      card.querySelector<HTMLElement>('.rc-dot')!.className = `rc-dot ${details.tone}`;
+    }
+  }
+  function terminationText(ack: {remoteProcessStopped: boolean | null} | null | undefined) {
+    return ack?.remoteProcessStopped === true ? 'Host confirmed the remote process stopped.' : ack?.remoteProcessStopped === false ? 'Host reports the remote process was not stopped.' : 'Cancellation requested; remote process termination is unconfirmed.';
+  }
+  async function syncLive() {
+    if (!active || syncing || !current) return;
+    syncing = true;
+    const profileId = current, run = execution;
+    try {
+      const snapshot = await request('sync', {viewId, profileId,
+        ...(run ? {runId: run.runId, stdoutOffset: run.stdoutOffset, stderrOffset: run.stderrOffset} : {})});
+      if (!active) return;
+      if (current === profileId) {monitor = snapshot.monitor; monitoredProfile = profileId; lastSync = Date.now(); drawConnection();}
+      if (run && execution === run && snapshot.output?.runId === run.runId) {
+        const delta = snapshot.output, record = output.get(run.profileId);
+        if (!run.done && record) {record.stdout += delta.stdout; record.stderr += delta.stderr;}
+        run.stdoutOffset = delta.stdoutOffset; run.stderrOffset = delta.stderrOffset;
+        if (record && delta.cancelRequested) record.termination = terminationText(delta.cancellation);
+        if (record && !run.done) record.details = `Elapsed ${Math.round((Date.now() - run.started) / 1000)}s · live stdout and stderr`;
+        if (!run.done && record && delta.done && delta.stdoutOffset === delta.stdoutLength && delta.stderrOffset === delta.stderrLength) {
+          run.done = true;
+          if (delta.error) run.reject(Object.assign(new Error(delta.error.error), {code: delta.error.code, output: {stdout: record.stdout, stderr: record.stderr}}));
+          else run.resolve({result: {...delta.result, stdout: record.stdout, stderr: record.stderr}});
+        }
+        if (current === run.profileId && record) drawOutput();
+      }
+    } catch (error) {
+      if (active && current === profileId) {
+        monitor = {active: false, observation: null, error: error instanceof Error ? error.message : 'Status feed unavailable.'};
+        monitoredProfile = profileId; lastSync = Date.now(); drawConnection();
+      }
+    } finally {syncing = false;}
+  }
   function persistence() {
     if (!active) return;
-    $('rc-persistence').textContent = failures.has(current) ? 'Changes are not persisted. Retry saving before reloading.' : pending ? 'Saving changes…' : 'Changes persisted by FDO';
-    $('rc-persistence').classList.toggle('rc-error', failures.has(current));
-    $('rc-retry-save').hidden = !failures.has(current);
+    byId('rc-persistence').textContent = failures.has(current) ? 'Changes are not persisted. Retry saving before reloading.' : pending ? 'Saving changes…' : 'Changes persisted by FDO';
+    byId('rc-persistence').classList.toggle('rc-error', failures.has(current));
+    byId('rc-retry-save').hidden = !failures.has(current);
   }
   function persist(profileId = current) {
     if (!states[profileId]) return;
@@ -71,10 +126,10 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
     settingEditor = false;
   }
   function dirty() {
-    const b = batch(); $('rc-dirty').textContent = b && b.draft !== b.script ? '● Unsaved draft' : 'Saved batch';
+    const b = batch(); byId('rc-dirty').textContent = b && b.draft !== b.script ? '● Unsaved draft' : 'Saved batch';
   }
   function parameters() {
-    const box = $('rc-parameters'), keys = helpers.placeholders(getEditor());
+    const box = byId('rc-parameters'), keys = helpers.placeholders(getEditor());
     if (box.dataset.keys === JSON.stringify([current, keys])) return;
     box.dataset.keys = JSON.stringify([current, keys]); box.replaceChildren();
     if (keys.length) box.append(el('p', 'Template values are shell fragments. Include any needed quotes; review the resolved script.', 'rc-muted'));
@@ -88,13 +143,16 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
     batch()!.draft = getEditor(); dirty(); parameters(); persist();
   }
   function drawVMs() {
-    const query = input('rc-vm-search').value.toLowerCase(), list = $('rc-vms'); list.replaceChildren();
-    const visible = profiles.filter(p => `${p.label} ${p.id}`.toLowerCase().includes(query));
-    $('rc-vm-count').textContent = `${visible.length} authorized profile${visible.length === 1 ? '' : 's'}`;
+    const query = input('rc-vm-search').value.toLowerCase(), list = byId('rc-vms'); list.replaceChildren();
+    const visible = profiles.filter(p => `${p.label} ${p.id} ${p.host || ''} ${p.port ?? ''} ${p.username || ''}`.toLowerCase().includes(query));
+    byId('rc-vm-count').textContent = `${visible.length} authorized profile${visible.length === 1 ? '' : 's'}`;
     for (const p of visible) {
       const b = button('', () => switchVM(p.id), 'rc-vm'); b.setAttribute('aria-pressed', String(current === p.id));
+      b.dataset.profileId = p.id;
       b.disabled = !states[p.id];
       b.append(el('span', '●', 'rc-dot'), el('span', p.label));
+      if (p.host || p.username) b.lastElementChild!.append(el('span', helpers.describeProfile(p).destination, 'rc-muted'));
+      const liveStatus = el('span', connectionStatus(p.id).label, 'rc-muted'); liveStatus.dataset.liveStatus = ''; b.lastElementChild!.append(liveStatus);
       b.lastElementChild!.append(el('span', connections.get(p.id) || 'Connection not checked', 'rc-muted'));
       list.append(b);
     }
@@ -108,15 +166,16 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
     picker.value = state().selectedBatch;
   }
   function drawOutput() {
-    const box = $('rc-output'), result = output.get(current); box.replaceChildren();
+    const box = byId('rc-output'), result = output.get(current); box.replaceChildren();
     if (!result) {box.append(el('p', 'No execution results for this VM. Example batches are templates only.', 'rc-muted')); return;}
     box.append(el('p', result.status, result.status.startsWith('Succeeded') ? 'rc-ok' : result.status.startsWith('Running') ? '' : 'rc-error'), el('p', result.details, 'rc-muted'));
+    if (result.termination) box.append(el('p', result.termination, 'rc-muted'));
     for (const [label, text, cls] of [['Executed script', result.command, ''], ['stdout', result.stdout, ''], ['stderr', result.stderr, 'rc-error']]) {
       box.append(el('h3', label), el('pre', text || '(empty)', `rc-code ${cls}`));
     }
   }
   function drawSaved() {
-    const list = $('rc-saved'); list.replaceChildren();
+    const list = byId('rc-saved'); list.replaceChildren();
     if (!state()) {list.append(el('p', 'Select an authorized VM to save important commands.', 'rc-muted')); return;}
     const query = input('rc-saved-search').value.toLowerCase();
     const all = state().saved;
@@ -131,7 +190,7 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
       card.append(el('pre', item.script, 'rc-code'));
       const actions = el('div', '', 'rc-row');
       const run = button('▶ Run', () => openReview(item.script), 'rc-primary'); run.disabled = busy;
-      actions.append(button('Insert into editor', () => {
+      actions.append(button(/* language=TEXT */ 'Insert into editor', () => {
         if (ace) {ace.insert(item.script); ace.focus();}
         else {const start = area.selectionStart, end = area.selectionEnd; area.setRangeText(item.script, start, end, 'end'); editorChanged(); area.focus();}
       }), run, button('Edit', () => editSaved(item)), button('Delete', () => confirmAction(`Delete “${item.name}”?`, () => {state().saved = all.filter(s => s.id !== item.id); persist(); drawSaved();})), button('Copy to VM', () => copyToVM('saved', item.id)));
@@ -145,16 +204,23 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
   }
   function switchVM(id: string) {
     if (!states[id]) return;
-    current = id; $('rc-workspace').hidden = false;
-    $('rc-vm-name').textContent = profiles.find(p => p.id === id)?.label || id;
-    $('rc-connection').textContent = connections.get(id) || 'Connection not checked';
+    if (current !== id) {monitor = null; monitoredProfile = id; lastSync = Date.now();}
+    current = id; byId('rc-workspace').hidden = false;
+    const profile = profiles.find(p => p.id === id), details = helpers.describeProfile(profile);
+    byId('rc-vm-name').textContent = profile?.label || id;
+    byId('rc-vm-address').textContent = details.address;
+    byId('rc-vm-user').textContent = details.username;
+    byId('rc-vm-auth').textContent = details.authentication;
+    byId('rc-vm-fingerprint').textContent = details.fingerprint;
     input('rc-timeout').value = String(state().timeout); input('rc-stop').checked = state().stopOnError;
+    input('rc-capture').value = String(state().captureBytes / 1024);
     setEditor(batch()!.draft); drawVMs(); drawBatches(); drawSaved(); drawOutput(); parameters(); dirty(); persistence();
-    $('rc-run').toggleAttribute('disabled', busy); $('rc-run-selected').toggleAttribute('disabled', busy);
+    byId('rc-run').toggleAttribute('disabled', busy); byId('rc-run-selected').toggleAttribute('disabled', busy);
+    drawConnection(); void syncLive();
   }
   function modal(title: string) {
     if (dialog.open) dialog.close();
-    const body = $('rc-dialog-body'); body.replaceChildren();
+    const body = byId('rc-dialog-body'); body.replaceChildren();
     const heading = el('h2', title); heading.id = 'rc-dialog-title'; body.append(heading);
     const form = el('form'); form.onsubmit = e => e.preventDefault(); body.append(form);
     dialog.showModal();
@@ -219,10 +285,13 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
   }
   async function openReview(script: string) {
     if (!state() || busy) return;
-    const profileId = current, settings = state(), label = profiles.find(p => p.id === profileId)!.label;
+    const profileId = current, settings = state();
+    let label = profiles.find(p => p.id === profileId)!.label;
     const form = modal('Review remote execution');
-    form.append(el('p', `${label} · profile ${profileId}`, 'rc-review-target'), el('p', `Timeout ${settings.timeout}s · ${settings.stopOnError ? 'Stop on error: set -e' : 'Continue using the remote shell defaults'}`, 'rc-muted'));
-    form.append(el('p', 'Template values are inserted verbatim as shell fragments. Include quotes where needed. The final script below is the exact command FDO must authorize. The current settings form accepts one-line policy entries; multiline scripts require host support for whole-script authorization.', 'rc-muted'));
+    const destination = el('p', 'Resolving SSH destination…', 'rc-review-target');
+    const trust = el('p', '', 'rc-muted rc-profile-trust');
+    form.append(destination, trust, el('p', `Timeout ${settings.timeout}s · capture ${settings.captureBytes / 1024} KiB · ${settings.stopOnError ? 'Stop on error: set -e' : 'Continue using the remote shell defaults'}`, 'rc-muted'));
+    form.append(el('p', 'Template values are inserted verbatim as shell fragments. Include quotes where needed. Review the complete resolved script and destination before executing.', 'rc-muted'));
     const values = {...settings.values}; let token = '', revision = 0;
     const preview = el('pre', 'Resolve the commands to review the exact script.', 'rc-code');
     const feedback = el('p', '', 'rc-error'); feedback.setAttribute('role', 'alert');
@@ -230,21 +299,40 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
       if (!token || busy) return;
       const executionToken = token; token = ''; busy = true; execute.disabled = true; dialog.close();
       const command = preview.textContent || '', started = Date.now();
-      output.set(profileId, {command, status: 'Running…', stdout: '', stderr: '', details: `${label} · started ${new Date(started).toLocaleString()} · buffered output`});
-      $('rc-running').hidden = false; switchVM(current);
-      const timer = window.setInterval(() => {const r = output.get(profileId); if (current === profileId && active && r) {r.details = `${label} · elapsed ${Math.round((Date.now() - started) / 1000)}s · awaiting buffered output`; drawOutput();}}, 1000);
+      let resolve!: (value: any) => void, reject!: (error: Error) => void;
+      const completion = new Promise<any>((yes, no) => {resolve = yes; reject = no;});
+      void completion.catch(() => {});
+      const run = {resolve, reject, runId: uid(), profileId, stdoutOffset: 0, stderrOffset: 0, started, done: false}; execution = run;
+      output.set(profileId, {command, status: 'Running…', stdout: '', stderr: '', details: `${label} · live stdout and stderr`});
+      byId('rc-running-target').textContent = `Running on ${label}`;
+      byId('rc-running').hidden = false; byId('rc-cancel').toggleAttribute('disabled', false); switchVM(current);
       try {
-        const {result} = await request('run', {token: executionToken});
+        await request('start', {token: executionToken, viewId, runId: run.runId}).catch(error => {
+          // A lost acknowledgement is ambiguous. Never retry the command.
+          void request('cancel', {viewId, runId: run.runId}).catch(() => {});
+          return Promise.reject(error);
+        });
+        void syncLive();
+        const completed = await completion;
+        const {result} = completed;
         const success = result.exitCode === 0 && !result.signal;
+        const previous = output.get(profileId);
         output.set(profileId, {command, status: success ? 'Succeeded · exit 0' : `Failed · exit ${result.exitCode ?? 'unavailable'}${result.signal ? ` · signal ${result.signal}` : ''}`, stdout: result.stdout, stderr: result.stderr,
-          details: `${label} · ${result.durationMs} ms · completed ${new Date().toLocaleString()}${result.truncated ? ' · OUTPUT TRUNCATED at the host capture limit' : ''}${success ? '' : ' · Review stderr and the script before retrying.'}`});
+          details: `${label} · ${result.durationMs} ms · completed ${new Date().toLocaleString()}${result.truncated ? ' · OUTPUT TRUNCATED at the host capture limit' : ''}${success ? '' : ' · Review stderr and the script before retrying.'}`, termination: previous?.termination});
         connections.set(profileId, 'Last SSH attempt reached VM');
       } catch (e) {
-        output.set(profileId, {command, status: 'Execution failed', stdout: '', stderr: '', details: e instanceof Error ? e.message : String(e)});
-        connections.set(profileId, 'Last SSH attempt failed');
+        const previous = output.get(profileId);
+        const captured = (e as {output?: {stdout: string; stderr: string}}).output;
+        output.set(profileId, {command, status: (e as {code?: string}).code === 'CANCELLED' ? 'Cancelled' : (e as {code?: string}).code === 'TIMEOUT' ? 'Timed out' : 'Execution failed',
+          stdout: captured?.stdout ?? previous?.stdout ?? '', stderr: captured?.stderr ?? previous?.stderr ?? '', termination: previous?.termination,
+          details: `${label} · elapsed ${Date.now() - started} ms · ${e instanceof Error ? e.message : String(e)}`});
+        connections.set(profileId, 'Last execution did not complete normally');
       } finally {
-        clearInterval(timer); busy = false;
-        if (active) {$('rc-running').hidden = true; switchVM(current);}
+        run.done = true; busy = false;
+        const final = output.get(profileId);
+        // Completion follows the final drained delta; later polls update cancellation evidence.
+        if (final) {run.stdoutOffset = final.stdout.length; run.stderrOffset = final.stderr.length;}
+        if (active) {byId('rc-running').hidden = true; byId('rc-cancel').toggleAttribute('disabled', true); switchVM(current);}
       }
     }, 'rc-primary'); execute.disabled = true;
     for (const key of helpers.placeholders(script)) {
@@ -254,24 +342,31 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
     const resolve = async () => {
       const attempt = ++revision; token = ''; execute.disabled = true; feedback.textContent = '';
       try {
-        const review = await request('prepare', {profileId, script, values: {...values}, timeout: settings.timeout, stopOnError: settings.stopOnError});
+        const review = await request('prepare', {profileId, script, values: {...values}, timeout: settings.timeout, stopOnError: settings.stopOnError, maxOutputBytes: settings.captureBytes});
         if (!active || !dialog.open || attempt !== revision || !form.isConnected) return;
+        const details = helpers.describeProfile(review.profile);
+        label = `${review.label} · ${details.destination}`;
+        destination.textContent = `${review.label} · ${details.destination} · profile ${review.profileId}`;
+        trust.textContent = `Authentication: ${details.authentication} · Enrolled host key: ${details.fingerprint}`;
         preview.textContent = review.command; token = review.token; execute.disabled = false;
         settings.values = {...values}; persist(profileId);
       } catch (e) {if (attempt === revision) {preview.textContent = 'Commands are not ready for execution.'; feedback.textContent = e instanceof Error ? e.message : String(e);}}
     };
-    form.append(button('Resolve commands', resolve), preview, feedback, el('p', 'SSH output is buffered. Cancellation is unavailable; remote processes may outlive a timeout.', 'rc-muted'), execute, button('Copy resolved script', () => copyText(preview.textContent || '')), closeButton());
+    form.append(button('Resolve commands', resolve), preview, feedback, el('p', 'Output streams live. Cancel or closing this view requests termination; only affirmative host evidence confirms the remote process stopped.', 'rc-muted'), execute, button('Copy resolved script', () => copyText(preview.textContent || '')), closeButton());
     await resolve();
   }
   async function load() {
     if (loading || busy || pending || failures.size) {message('Wait for execution and saving to finish; retry failed saves before refreshing.', true); return;}
     loading = true; const attempt = ++generation;
     try {
+      await request('release', {viewId}); monitor = null; lastSync = 0;
       const data = await request('bootstrap'); if (!active || attempt !== generation) return;
       profiles = data.profiles; states = data.states;
       const available = profiles.filter(p => states[p.id]);
       if (available.length) switchVM(available.some(p => p.id === current) ? current : available[0].id);
-      else {current = ''; $('rc-workspace').hidden = true; $('rc-vm-name').textContent = 'Select a VM'; $('rc-connection').textContent = 'Connection not checked'; drawVMs(); drawSaved(); drawOutput();}
+      else {current = ''; byId('rc-workspace').hidden = true; byId('rc-vm-name').textContent = 'Select a VM'; byId('rc-connection').textContent = 'Connection not checked';
+        for (const id of ['rc-vm-address', 'rc-vm-user', 'rc-vm-auth', 'rc-vm-fingerprint']) byId(id).textContent = 'Select a VM';
+        drawVMs(); drawSaved(); drawOutput();}
       message(data.warnings.join('\n') || (profiles.length ? '' : 'No authorized SSH profiles. Configure and authorize a profile in FDO Settings → Credentials & SSH.'), data.warnings.length > 0);
     } catch (e) {report(e);} finally {loading = false;}
   }
@@ -279,19 +374,30 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
   // Reuse the documented injected ACE editor, retaining a multiline fallback.
   try {
     if (win.ace?.edit) {
-      $('rc-ace').hidden = false; ace = win.ace.edit('rc-ace'); ace.session.setMode('ace/mode/sh'); ace.setTheme('ace/theme/monokai');
+      byId('rc-ace').hidden = false; ace = win.ace.edit('rc-ace'); ace.session.setMode('ace/mode/sh'); ace.setTheme('ace/theme/monokai');
       ace.setOptions({fontSize: 14, showPrintMargin: false, useSoftTabs: true, tabSize: 2});
       ace.session.on('change', editorChanged); area.hidden = true;
       disposers.push(() => ace.destroy());
     }
-  } catch {try {ace?.destroy();} catch {} ace = null; $('rc-ace').hidden = true; area.hidden = false;}
+  } catch {try {ace?.destroy();} catch {} ace = null; byId('rc-ace').hidden = true; area.hidden = false;}
   on(area, 'input', editorChanged);
   on(root, 'click', (event) => {
     const id = (event.target as Element).closest('button')?.id;
     if (!id) return;
     Promise.resolve().then(async () => {
       if (id === 'rc-refresh') return load();
-      if (id === 'rc-clear') {output.delete(current); drawOutput(); return;}
+      if (id === 'rc-cancel' && execution && busy) {
+        const run = execution; byId('rc-cancel').toggleAttribute('disabled', true);
+        const pending = output.get(run.profileId); if (pending) pending.termination = 'Cancellation requested; awaiting the host acknowledgement.';
+        if (current === run.profileId) drawOutput();
+        try {
+          const reply = await request('cancel', {viewId, runId: run.runId});
+          const record = output.get(run.profileId); if (record) record.termination = reply.requested ? terminationText(reply.cancellation) : 'Execution completed before cancellation was requested.';
+          if (current === run.profileId) drawOutput();
+        } catch (error) {byId('rc-cancel').toggleAttribute('disabled', !busy); throw error;}
+        return;
+      }
+      if (id === 'rc-clear') {if (busy && execution?.profileId === current) throw new Error('Wait for the run to finish or cancel it before clearing output.'); output.delete(current); drawOutput(); return;}
       if (id === 'rc-copy-output') {const r = output.get(current); if (r) await copyText(`${r.status}\n${r.details}\n$ ${r.command}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`); return;}
       if (!state()) {message('Select an authorized VM first.', true); return;}
       if (id === 'rc-new') nameBatch('new');
@@ -314,23 +420,30 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {placeholders: (
       if (id === 'rc-replace-all') {
         const find = input('rc-find').value; if (!find) throw new Error('Enter literal text to find.');
         const source = getEditor(), parts = source.split(find); setEditor(parts.join(input('rc-replace').value)); editorChanged();
-        $('rc-replaced').textContent = `${parts.length - 1} replacement(s)`;
+        byId('rc-replaced').textContent = `${parts.length - 1} replacement(s)`;
       }
     }).catch(report);
   });
-  on($('rc-batches'), 'change', () => {state().selectedBatch = select('rc-batches').value; setEditor(batch()!.draft); parameters(); dirty(); persist();});
-  on($('rc-batch-search'), 'input', () => {if (state()) drawBatches();});
-  on($('rc-vm-search'), 'input', drawVMs);
-  on($('rc-saved-search'), 'input', drawSaved); on($('rc-favorites'), 'change', drawSaved);
-  on($('rc-timeout'), 'change', () => {
+  on(byId('rc-batches'), 'change', () => {state().selectedBatch = select('rc-batches').value; setEditor(batch()!.draft); parameters(); dirty(); persist();});
+  on(byId('rc-batch-search'), 'input', () => {if (state()) drawBatches();});
+  on(byId('rc-vm-search'), 'input', drawVMs);
+  on(byId('rc-saved-search'), 'input', drawSaved); on(byId('rc-favorites'), 'change', drawSaved);
+  on(byId('rc-timeout'), 'change', () => {
     if (!state()) return; const timeout = Number(input('rc-timeout').value);
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120) {input('rc-timeout').value = String(state().timeout); message('Timeout must be 1–120 seconds.', true); return;}
     state().timeout = timeout; persist();
   });
-  on($('rc-stop'), 'change', () => {if (state()) {state().stopOnError = input('rc-stop').checked; persist();}});
-  on(window, 'beforeunload', (event) => {if (pending || failures.size || busy) {event.preventDefault(); (event as BeforeUnloadEvent).returnValue = '';}});
+  on(byId('rc-capture'), 'change', () => {
+    if (!state()) return; const kib = Number(input('rc-capture').value);
+    if (!Number.isInteger(kib) || kib < 1 || kib > 16384) {input('rc-capture').value = String(state().captureBytes / 1024); message('Capture must be 1–16384 KiB.', true); return;}
+    state().captureBytes = kib * 1024; persist();
+  });
+  on(byId('rc-stop'), 'change', () => {if (state()) {state().stopOnError = input('rc-stop').checked; persist();}});
+  on(window, 'beforeunload', (event) => {if (pending || failures.size || busy) {event.preventDefault();}});
+  const liveTimer = window.setInterval(() => {drawConnection(); void syncLive();}, 250);
+  disposers.push(() => window.clearInterval(liveTimer));
   void load();
-  const cleanup = () => {active = false; generation++; disposers.forEach(fn => fn()); if (dialog.open) dialog.close();};
+  const cleanup = () => {active = false; generation++; disposers.forEach(fn => fn()); if (dialog.open) dialog.close(); void request('release', {viewId}).catch(() => {});};
   on(window, 'pagehide', cleanup);
   return cleanup;
 }
