@@ -427,7 +427,7 @@
   }
 }
 
-.shell #rc-terminal-screen {
+.shell #rc-terminal-frame {
   height: 380px;
   min-height: 240px;
   min-width: 0;
@@ -437,6 +437,21 @@
   background: #000;
   border: 1px solid var(--rc-line);
   border-radius: 5px;
+}
+
+.shell #rc-terminal-screen {
+  height: 100%;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.shell #rc-terminal-prompt-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
 }
 
 .shell #rc-terminal-target {

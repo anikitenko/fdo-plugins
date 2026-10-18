@@ -116,6 +116,12 @@ function configure() {
       assert.equal(document.querySelector('#rc-console-batch').getAttribute('aria-pressed'), 'false');
       assert.equal(document.querySelector('#rc-console-terminal').getAttribute('aria-pressed'), 'true');
       assert.equal(document.querySelectorAll('#rc-terminal-screen').length, 1);
+      const terminalMount = document.querySelector('#rc-terminal-screen');
+      assert.equal(terminalMount.parentElement.id, 'rc-terminal-frame');
+      assert.equal(computed(terminalMount).height, '100%');
+      assert.equal(computed(terminalMount).padding, '0px');
+      assert.equal(computed(terminalMount).borderWidth, '0px');
+      assert.equal(computed(terminalMount.parentElement).padding, '8px');
       assert.equal(document.querySelector('#rc-run-mode').value, 'terminal');
       assert.equal(document.querySelector('#rc-workspace').hasAttribute('hidden'), true);
       // jsdom's cascade does not reliably honor !important over later rules.

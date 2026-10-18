@@ -5,6 +5,7 @@ import {placeholders} from './model.ts';
 import {describeProfile} from './profiles.ts';
 import {describeStatus} from './status.ts';
 import {mountTerminal} from './terminal-ui.ts';
+import {promptCommand} from './terminal-prompt.ts';
 
 export function renderRemoteCommands(): string {
   const dom = new DOM().collectStylesFrom();
@@ -44,9 +45,9 @@ export function renderRemoteCommands(): string {
           <div id="rc-terminal-panel" class="rc-stack" role="region" aria-label="Interactive terminal">
             <div class="rc-row"><label>X11 forwarding<select id="rc-terminal-x11"><option value="off">Off — editors and pagers work without X11</option><option value="untrusted">Untrusted (requires X SECURITY)</option><option value="trusted">Trusted (local display access)</option></select></label>${btn('rc-terminal-open','Open terminal',true)}${btn('rc-terminal-close','Close terminal')}</div>
             <p id="rc-terminal-target" class="rc-review-target">No terminal connected.</p>
-            <div class="rc-row">${btn('rc-terminal-interrupt','Ctrl+C')}${btn('rc-terminal-eof','Ctrl+D')}${btn('rc-terminal-cancel','Cancel session')}</div>
+            <div class="rc-row">${btn('rc-terminal-interrupt','Ctrl+C')}${btn('rc-terminal-eof','Ctrl+D')}${btn('rc-terminal-cancel','Cancel session')}${btn('rc-terminal-prompt','Customize prompt')}</div>
             <p id="rc-terminal-status" class="rc-muted" role="status">Open a shell or choose Interactive terminal in Execution mode to run a batch here. A PTY provides TERM and keyboard input for editors and pagers. X11 is only for graphical applications and needs separate authorization.</p>
-            <div id="rc-terminal-screen" hidden="hidden" aria-label="Remote interactive terminal"></div>
+            <div id="rc-terminal-frame" hidden="hidden"><div id="rc-terminal-screen" aria-label="Remote interactive terminal"></div></div>
             <p class="rc-muted">Switching console views keeps the session running on its labelled VM. After a batch finishes, its exit code is shown and the shell remains open for commands or explicit Cancel/Close. Keyboard input goes only to the visible terminal; the remote PTY controls password echo. Output is not saved. Idle limit: 5 minutes; session limit: 1 hour. Untrusted X11 authorization expires after at most 5 minutes and closes the terminal. Close releases the channel without guaranteeing remote termination.</p>
           </div>
         </section>
@@ -55,9 +56,10 @@ export function renderRemoteCommands(): string {
       <aside class="rc-panel rc-saved rc-stack" aria-label="Saved commands for selected VM"><div class="rc-row rc-between"><h2>Saved for this VM</h2>${btn('rc-add-saved','+ Add')}</div><label class="rc-field">Search saved commands<input id="rc-saved-search" type="search" placeholder="Search commands…" /></label><label><input id="rc-favorites" type="checkbox" />Favorites only</label><div id="rc-saved"></div></aside>
     </div><dialog id="rc-dialog" aria-labelledby="rc-dialog-title"><div id="rc-dialog-body"></div></dialog>
     <dialog id="rc-terminal-review" aria-labelledby="rc-terminal-review-title"><div class="rc-stack"><h2 id="rc-terminal-review-title">Open interactive SSH session</h2><p id="rc-terminal-review-target" class="rc-review-target"></p><p id="rc-terminal-review-trust" class="rc-muted"></p><p>Interactive access permits arbitrary commands without individual command reviews. Passwords typed into the remote terminal are not saved by this plugin.</p><p id="rc-terminal-review-mode"></p><div class="rc-row">${btn('rc-terminal-review-connect','Connect terminal',true)}${btn('rc-terminal-review-back','Back')}</div></div></dialog>
+    <dialog id="rc-terminal-prompt-dialog" aria-labelledby="rc-terminal-prompt-title"><div class="rc-stack"><h2 id="rc-terminal-prompt-title">Customize shell prompt</h2><p id="rc-terminal-prompt-target" class="rc-review-target"></p><p>Applies to this Bash or Zsh session only. No shell configuration files are changed. Apply when the shell is idle; the command below is sent as terminal input.</p><label>Prompt style<select id="rc-terminal-prompt-style"><option value="full">User @ host · directory</option><option value="path">Directory</option></select></label><label>Label (optional)<input id="rc-terminal-prompt-label" maxlength="32" pattern="[A-Za-z0-9 ._-]*" placeholder="e.g. staging" /></label><label><input id="rc-terminal-prompt-git" type="checkbox" checked="checked" />Show Git branch or detached commit when available</label><p class="rc-muted">Git updates at each prompt. Unusual branch-name characters appear as ?.</p><pre id="rc-terminal-prompt-preview"></pre><p id="rc-terminal-prompt-error" class="rc-error" role="alert"></p><div class="rc-row">${btn('rc-terminal-prompt-apply','Apply to current shell',true)}${btn('rc-terminal-prompt-back','Back')}</div></div></dialog>
   </main>`);
 }
 
 export function renderRemoteCommandsOnLoad(): string {
-  return `(() => {const root = document.getElementById('remote-commands'); if (!root) return; if (root.__rcCleanup) root.__rcCleanup();root.__rcCleanup=(${mountRemoteCommands.toString()})(root, {placeholders: ${placeholders.toString()}, describeProfile: ${describeProfile.toString()}, describeStatus: ${describeStatus.toString()}, mountTerminal: ${mountTerminal.toString()}, formatPrivilegedError: ${getInlinePrivilegedActionErrorFormatterSource()}});})();`;
+  return `(() => {const root = document.getElementById('remote-commands'); if (!root) return; if (root.__rcCleanup) root.__rcCleanup();root.__rcCleanup=(${mountRemoteCommands.toString()})(root, {placeholders: ${placeholders.toString()}, describeProfile: ${describeProfile.toString()}, describeStatus: ${describeStatus.toString()}, mountTerminal: ${mountTerminal.toString()}, promptCommand: ${promptCommand.toString()}, formatPrivilegedError: ${getInlinePrivilegedActionErrorFormatterSource()}});})();`;
 }

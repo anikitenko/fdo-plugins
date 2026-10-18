@@ -3,9 +3,10 @@ import type {SSHProfileSummary} from '@anikitenko/fdo-sdk';
 import type {describeProfile} from './profiles.ts';
 import type {describeStatus, MonitorSnapshot} from './status.ts';
 import type {mountTerminal} from './terminal-ui.ts';
+import type {promptCommand} from './terminal-prompt.ts';
 
 /** Self-contained iframe callback: imports are types only; all dependencies are injected. */
-export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: typeof mountTerminal; placeholders: (s: string) => string[]; describeProfile: typeof describeProfile; describeStatus: typeof describeStatus; formatPrivilegedError: (response: any, options: any) => string}) {
+export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: typeof mountTerminal; promptCommand: typeof promptCommand; placeholders: (s: string) => string[]; describeProfile: typeof describeProfile; describeStatus: typeof describeStatus; formatPrivilegedError: (response: any, options: any) => string}) {
   const win = window as any;
   const byId = <T extends HTMLElement = HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
   function showConsole(view: 'batch' | 'terminal') {
@@ -483,7 +484,7 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
   });
   on(byId('rc-stop'), 'change', () => {if (state()) {state().stopOnError = input('rc-stop').checked; persist();}});
   on(window, 'beforeunload', (event) => {if (pending || failures.size || busy) {event.preventDefault();}});
-  const terminalView = helpers.mountTerminal(root, {viewId, request, activate: () => showConsole('terminal'), profile: () => profiles.find(p => p.id === current), describeProfile: helpers.describeProfile});
+  const terminalView = helpers.mountTerminal(root, {viewId, request, activate: () => showConsole('terminal'), profile: () => profiles.find(p => p.id === current), describeProfile: helpers.describeProfile, promptCommand: helpers.promptCommand});
   disposers.push(terminalView.dispose);
   const liveTimer = window.setInterval(() => {drawConnection(); void syncLive();}, 250);
   disposers.push(() => window.clearInterval(liveTimer));

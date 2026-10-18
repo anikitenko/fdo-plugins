@@ -1,5 +1,6 @@
 import type {SSHProfileSummary} from '@anikitenko/fdo-sdk';
 import type {describeProfile} from './profiles.ts';
+import type {promptCommand} from './terminal-prompt.ts';
 
 type Renderer = {write: (bytes: Uint8Array, consumed: () => void) => void; onData: (fn: (text: string) => void) => {dispose(): void};
   onResize: (fn: (size: {rows: number; columns: number}) => void) => {dispose(): void}; getSize(): {rows: number; columns: number}; focus(): void; reset(): void; dispose(): void};
@@ -8,13 +9,16 @@ type SessionView = {id: string; started: number; generation: number; ready: bool
 
 /** Serialized callback. The host owns the emulator, PTY, X11 and credentials. */
 export function mountTerminal(root: HTMLElement, options: {viewId: string; request: (name: string, data: unknown) => Promise<any>;
-  activate: () => void; profile: () => SSHProfileSummary | undefined; describeProfile: typeof describeProfile}) {
+  activate: () => void; profile: () => SSHProfileSummary | undefined; describeProfile: typeof describeProfile; promptCommand: typeof promptCommand}) {
   const byId = <T extends HTMLElement = HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
   const screen = byId('rc-terminal-screen'), status = byId('rc-terminal-status'), target = byId('rc-terminal-target');
   const dialog = byId<HTMLDialogElement>('rc-terminal-review'), mode = byId<HTMLSelectElement>('rc-terminal-x11');
   const disposers: (() => void)[] = [];
   let renderer: Renderer | undefined, session: SessionView | undefined, disposed = false, polling = false, generation = 0;
   let reviewed: {profile: SSHProfileSummary; mode: string} | undefined;
+  const promptDialog = byId<HTMLDialogElement>('rc-terminal-prompt-dialog');
+  let promptOwner: SessionView | undefined;
+  let reviewedPrompt = '';
   const on = (id: string, action: () => void) => {const node = byId(id); node.addEventListener('click', action); disposers.push(() => node.removeEventListener('click', action));};
   function controls() {
     byId<HTMLButtonElement>('rc-terminal-open').disabled = !!session;
@@ -23,11 +27,13 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
     viewButton.textContent = session ? session.batch?.state === 'completed' ? 'Interactive terminal · shell ready' : session.batch ? 'Interactive terminal · batch running' : 'Interactive terminal · active' : 'Interactive terminal';
     viewButton.title = session ? target.textContent || 'Interactive session active' : 'Show interactive terminal';
     for (const id of ['rc-terminal-interrupt', 'rc-terminal-eof']) byId<HTMLButtonElement>(id).disabled = !session?.ready;
+    byId<HTMLButtonElement>('rc-terminal-prompt').disabled = !session?.ready || session.batch?.state === 'running';
     byId<HTMLButtonElement>('rc-terminal-cancel').disabled = !session || session.finished;
     byId<HTMLButtonElement>('rc-terminal-close').disabled = !session;
   }
   const report = (error: unknown) => {status.classList.remove('rc-ok'); status.textContent = error instanceof Error ? error.message : 'Terminal unavailable.'; status.classList.add('rc-error');};
   async function close(message = 'Terminal closed. Remote process termination is unconfirmed.') {
+    promptOwner = undefined; if (promptDialog.open) promptDialog.close();
     const old = session; session = undefined; generation++; controls();
     if (!disposed) status.textContent = message;
     if (old?.id) await options.request('terminalClose', {viewId: options.viewId, id: old.id}).catch(report);
@@ -58,7 +64,7 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
     if (renderer) return renderer;
     const factory = (window as any).FDOTerminal;
     if (typeof factory?.create !== 'function') throw new Error('This FDO host has no terminal renderer. Update and restart FDO; no SSH session was opened.');
-    screen.hidden = false;
+    byId('rc-terminal-frame').hidden = false;
     renderer = factory.create(screen, {term: 'xterm-256color', rows: 24, columns: 80}) as Renderer;
     const input = renderer.onData(queueInput), resize = renderer.onResize(size => {if (session) session.resize = size;});
     disposers.push(() => input.dispose(), () => resize.dispose());
@@ -81,6 +87,34 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
     } catch (error) {report(error);}
   });
   on('rc-terminal-review-back', () => {reviewed = undefined; dialog.close();});
+  function reviewPrompt() {
+    const error = byId('rc-terminal-prompt-error');
+    try {
+      reviewedPrompt = options.promptCommand({style: byId<HTMLSelectElement>('rc-terminal-prompt-style').value,
+        label: byId<HTMLInputElement>('rc-terminal-prompt-label').value, git: byId<HTMLInputElement>('rc-terminal-prompt-git').checked});
+      byId('rc-terminal-prompt-preview').textContent = reviewedPrompt;
+      error.textContent = ''; byId<HTMLButtonElement>('rc-terminal-prompt-apply').disabled = false;
+    } catch (cause) {
+      reviewedPrompt = ''; byId('rc-terminal-prompt-preview').textContent = '';
+      error.textContent = cause instanceof Error ? cause.message : 'Invalid prompt settings.';
+      byId<HTMLButtonElement>('rc-terminal-prompt-apply').disabled = true;
+    }
+  }
+  for (const id of ['rc-terminal-prompt-style', 'rc-terminal-prompt-label', 'rc-terminal-prompt-git']) {
+    const node = byId(id); node.addEventListener('input', reviewPrompt); disposers.push(() => node.removeEventListener('input', reviewPrompt));
+  }
+  on('rc-terminal-prompt', () => {
+    if (!session?.ready || session.batch?.state === 'running') return;
+    promptOwner = session; byId('rc-terminal-prompt-target').textContent = target.textContent;
+    reviewPrompt(); promptDialog.showModal();
+  });
+  on('rc-terminal-prompt-back', () => {promptOwner = undefined; promptDialog.close(); renderer?.focus();});
+  on('rc-terminal-prompt-apply', () => {
+    if (!reviewedPrompt || session !== promptOwner || !session?.ready || session.pending || session.batch?.state === 'running') {
+      byId('rc-terminal-prompt-error').textContent = 'Wait for an idle, connected shell before applying.'; return;
+    }
+    queueInput(reviewedPrompt); promptOwner = undefined; promptDialog.close(); renderer?.focus();
+  });
   async function connect(review: {profile: SSHProfileSummary; mode: string}, batchToken?: string) {
     if (session) throw new Error('Close the current terminal before running an interactive batch.');
     const ownGeneration = ++generation;
@@ -147,6 +181,7 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
       const termination = evidence?.remoteProcessStopped === true ? 'Host confirmed the remote shell stopped.'
         : evidence?.remoteProcessStopped === false ? 'Host reports the remote shell was not stopped.' : 'Remote termination is unconfirmed.';
       if (state.done) {
+        promptOwner = undefined; if (promptDialog.open) promptDialog.close();
         const batchSummary = owner.batch?.state === 'completed' ? ` Batch finished · exit ${owner.batch.exitCode}.` : owner.batch ? ' Batch completion was not reported.' : '';
         owner.ready = false; owner.finished = true; controls();
         if (state.error) report(new Error(`[${state.error.code}] ${state.error.message}${batchSummary}`));
