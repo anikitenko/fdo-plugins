@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import type {SSHTerminalOptions, SSHTerminalOutput, SSHTerminalResult} from '@anikitenko/fdo-sdk';
 import {terminalLaunch} from '../terminal-launch.ts';
+import {createBatchProgress} from '../batch-progress.ts';
 import {createBackend} from '../backend.ts';
 import {serviceMessage} from '../model.ts';
 import {channel, deferred} from './fixtures.ts';
@@ -19,14 +20,16 @@ function fixture() {
     };}};
   const backend = createBackend(ssh, () => {throw new Error('No storage needed.');});
   const prepare = (executionMode = 'terminal', x11Mode = 'off') => backend.prepare({profileId: 'vm', script: 'nano notes.txt\nprintf done', stopOnError: true, timeout: 5, values: {}, executionMode, x11Mode});
-  return {backend, ssh, writes, opened, prepare, terminals: () => terminals, starts: () => starts};
+  return {backend, ssh, writes, output, opened, prepare, terminals: () => terminals, starts: () => starts};
 }
 
 test('terminal launch preserves quotes, multiline shell state and independent stdin for interactive commands', () => {
   const script = "cd /\nexport CHECK=kept\nprintf '%s\\n' \"quote's $CHECK\"\nread answer\nprintf 'after:%s:%s:%s' \"$PWD\" \"$answer\" \"$TERM\"";
   const env = {...process.env}; delete env.TERM; delete env.DISPLAY;
   const output = execFileSync('/bin/sh', ['-c', terminalLaunch(script)], {env, input: 'keyboard input\n', encoding: 'utf8'});
-  assert.equal(output, "quote's kept\nafter:/:keyboard input:xterm-256color");
+  const progress = createBatchProgress('00000000-0000-0000-0000-000000000000');
+  assert.equal(Buffer.from(progress.push(Buffer.from(output))).toString(), "quote's kept\nafter:/:keyboard input:xterm-256color");
+  assert.equal(progress.snapshot().state, 'completed');
   assert.throws(() => terminalLaunch('x'.repeat(3000)), /3000-byte/);
   assert.throws(() => terminalLaunch('echo ok\x03echo bad'), /control characters/);
 });
@@ -37,7 +40,13 @@ test('interactive review opens a fresh PTY, launches exactly the reviewed script
   const {id} = f.backend.terminalStart({token: review.token, viewId: 'view', rows: 24, columns: 80, command: 'ignored', profileId: 'ignored', mode: 'trusted'});
   await tick(); assert.equal(f.terminals(), 1); assert.equal(f.starts(), 0);
   assert.deepEqual(f.opened[0].x11, {mode: 'untrusted'}, 'execution cannot replace the reviewed X11 mode');
-  assert.deepEqual(f.writes, [terminalLaunch('set -e; nano notes.txt\nprintf done')]);
+  const completionId = /FDO_BATCH_([a-f0-9-]{36})/.exec(f.writes[0])![1];
+  assert.deepEqual(f.writes, [terminalLaunch('set -e; nano notes.txt\nprintf done', completionId)]);
+  f.output.push({sequence: 0, data: Buffer.from(`\x1eFDO_BATCH_${completionId}:7\x1f$ `)}); await tick();
+  const completed = f.backend.terminalPoll({viewId: 'view', id, ack: -1});
+  assert.equal(completed.batch!.state, 'completed'); assert.equal('exitCode' in completed.batch! && completed.batch.exitCode, 7);
+  assert.equal(completed.done, false); assert.equal(completed.ready, true);
+  assert.equal(Buffer.from(completed.packet!.bytes).toString(), '$ ');
   await f.backend.terminalInput({viewId: 'view', id, text: '\x18'}); assert.equal(f.writes.at(-1), '\x18');
   assert.throws(() => f.backend.terminalStart({token: review.token, viewId: 'view', rows: 24, columns: 80}), /Review/);
   f.backend.terminalClose({viewId: 'view', id}); await tick();

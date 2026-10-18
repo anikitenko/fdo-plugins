@@ -4,7 +4,7 @@ import type {describeProfile} from './profiles.ts';
 type Renderer = {write: (bytes: Uint8Array, consumed: () => void) => void; onData: (fn: (text: string) => void) => {dispose(): void};
   onResize: (fn: (size: {rows: number; columns: number}) => void) => {dispose(): void}; getSize(): {rows: number; columns: number}; focus(): void; reset(): void; dispose(): void};
 type SessionView = {id: string; started: number; generation: number; ready: boolean; ack: number; pending: number; bytes: number; tail: Promise<unknown>;
-  resize?: {rows: number; columns: number}; finished: boolean};
+  batch?: {state: 'running' | 'completed'; exitCode?: number; durationMs?: number}; resize?: {rows: number; columns: number}; finished: boolean};
 
 /** Serialized callback. The host owns the emulator, PTY, X11 and credentials. */
 export function mountTerminal(root: HTMLElement, options: {viewId: string; request: (name: string, data: unknown) => Promise<any>;
@@ -20,13 +20,13 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
     byId<HTMLButtonElement>('rc-terminal-open').disabled = !!session;
     mode.disabled = !!session;
     const viewButton = byId('rc-console-terminal');
-    viewButton.textContent = session ? 'Interactive terminal · active' : 'Interactive terminal';
+    viewButton.textContent = session ? session.batch?.state === 'completed' ? 'Interactive terminal · shell ready' : session.batch ? 'Interactive terminal · batch running' : 'Interactive terminal · active' : 'Interactive terminal';
     viewButton.title = session ? target.textContent || 'Interactive session active' : 'Show interactive terminal';
     for (const id of ['rc-terminal-interrupt', 'rc-terminal-eof']) byId<HTMLButtonElement>(id).disabled = !session?.ready;
     byId<HTMLButtonElement>('rc-terminal-cancel').disabled = !session || session.finished;
     byId<HTMLButtonElement>('rc-terminal-close').disabled = !session;
   }
-  const report = (error: unknown) => {status.textContent = error instanceof Error ? error.message : 'Terminal unavailable.'; status.classList.add('rc-error');};
+  const report = (error: unknown) => {status.classList.remove('rc-ok'); status.textContent = error instanceof Error ? error.message : 'Terminal unavailable.'; status.classList.add('rc-error');};
   async function close(message = 'Terminal closed. Remote process termination is unconfirmed.') {
     const old = session; session = undefined; generation++; controls();
     if (!disposed) status.textContent = message;
@@ -87,8 +87,8 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
     options.activate();
     try {
       const terminal = ensureRenderer(); terminal.reset();
-      const owner: SessionView = {id: '', started: Date.now(), generation: ownGeneration, ready: false, ack: -1, pending: 0, bytes: 0, tail: Promise.resolve(), finished: false};
-      session = owner; controls(); status.classList.remove('rc-error'); status.textContent = 'Opening authorized interactive session…';
+      const owner: SessionView = {id: '', started: Date.now(), generation: ownGeneration, ready: false, ack: -1, pending: 0, bytes: 0, ...(batchToken ? {batch: {state: 'running' as const}} : {}), tail: Promise.resolve(), finished: false};
+      session = owner; controls(); status.classList.remove('rc-error', 'rc-ok'); status.textContent = 'Opening authorized interactive session…';
       target.textContent = `${review.profile.label} · ${options.describeProfile(review.profile).destination} · X11 ${review.mode}`;
       controls();
       const opened = await options.request(batchToken ? 'terminalStart' : 'terminalOpen', {viewId: options.viewId, token: batchToken, profileId: review.profile.id, expectedProfile: review.profile, mode: review.mode, ...terminal.getSize()});
@@ -108,11 +108,12 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
     const review = reviewed; reviewed = undefined; dialog.close();
     void connect(review).catch(report);
   });
-  on('rc-terminal-close', () => {void close();});
+  on('rc-terminal-close', () => {status.classList.remove('rc-ok', 'rc-error'); void close();});
   on('rc-terminal-interrupt', () => {queueInput('\x03'); renderer?.focus();});
   on('rc-terminal-eof', () => {queueInput('\x04'); renderer?.focus();});
   on('rc-terminal-cancel', () => {
     const owner = session; if (!owner?.id || owner.finished) return;
+    status.classList.remove('rc-ok', 'rc-error');
     status.textContent = 'Cancellation requested; remote termination is unconfirmed.';
     void options.request('terminalCancel', {viewId: options.viewId, id: owner.id}).catch(report);
   });
@@ -141,18 +142,24 @@ export function mountTerminal(root: HTMLElement, options: {viewId: string; reque
         if (session !== owner || disposed) return;
         owner.ack = packet.sequence;
       }
+      owner.batch = state.batch; controls();
       const evidence = state.cancellation ?? state.result;
       const termination = evidence?.remoteProcessStopped === true ? 'Host confirmed the remote shell stopped.'
         : evidence?.remoteProcessStopped === false ? 'Host reports the remote shell was not stopped.' : 'Remote termination is unconfirmed.';
       if (state.done) {
+        const batchSummary = owner.batch?.state === 'completed' ? ` Batch finished · exit ${owner.batch.exitCode}.` : owner.batch ? ' Batch completion was not reported.' : '';
         owner.ready = false; owner.finished = true; controls();
-        if (state.error) report(new Error(`[${state.error.code}] ${state.error.message}`));
-        else status.textContent = `Terminal ${state.result?.reason ?? 'closed'} · exit ${state.result?.exitCode ?? 'unknown'} · ${Date.now() - owner.started} ms${state.result?.signal ? ` · signal ${state.result.signal}` : ''}. ${termination}`;
+        if (state.error) report(new Error(`[${state.error.code}] ${state.error.message}${batchSummary}`));
+        else status.textContent = `Terminal ${state.result?.reason ?? 'closed'} · exit ${state.result?.exitCode ?? 'unknown'} · ${Date.now() - owner.started} ms${state.result?.signal ? ` · signal ${state.result.signal}` : ''}. ${termination}${batchSummary}`;
         // Preserve the screen, release the backend handle and permit an explicit new session.
         await options.request('terminalClose', {viewId: options.viewId, id: owner.id});
         if (session === owner) {session = undefined; controls();}
       } else if (state.cancelRequested) status.textContent = `Cancellation requested. ${termination}`;
-      else status.textContent = 'Interactive shell · remote PTY controls echo · Ctrl+C interrupts the foreground program.';
+      else if (owner.batch?.state === 'completed') {
+        status.textContent = `Batch finished · exit ${owner.batch.exitCode} · ${owner.batch.durationMs} ms. Session is still open: type another command, Cancel session or Close terminal.`;
+        status.classList.toggle('rc-ok', owner.batch.exitCode === 0); status.classList.toggle('rc-error', owner.batch.exitCode !== 0);
+      } else if (owner.batch) status.textContent = 'Batch running · interact with the program here. Leaving an editor resumes the remaining script; the shell stays open afterward.';
+      else status.textContent = 'Session open · interactive shell · Ctrl+C interrupts the foreground program.';
     } catch (error) {
       if (session === owner) {report(error); await close(`${status.textContent} Remote termination is unconfirmed.`);}
     } finally {polling = false;}

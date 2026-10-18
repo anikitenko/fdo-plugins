@@ -47,6 +47,7 @@ test('UI streams output before completion, cancels honestly, retains partial out
   f.ssh.start = async options => {f.calls.push(options); return {events: events.iterator, result: terminal.promise,
     cancel: async () => {await events.close(); terminal.reject({code: 'CANCELLED'}); return {remoteProcessStopped: null};}};};
   try {
+    f.$('#rc-run-mode').value = 'batch';
     await f.type('#rc-capture', '4096'); f.$('#rc-capture').dispatchEvent(new f.win.Event('change')); await f.settle();
     await f.type('#rc-editor', 'echo live'); await f.click('#rc-run');
     assert.match(f.$('dialog').textContent, /capture 4096 KiB/); await f.action('Run without terminal');
@@ -154,6 +155,7 @@ test('saved scripts support metadata, search, favorites, edit, reorder, insert, 
 test('selected text and saved Run require review; template edits invalidate approval and results are safe text', async () => {
   const f = await fixture();
   try {
+    f.$('#rc-run-mode').value = 'batch';
     await f.type('#rc-editor', 'echo not-selected\necho {{service}}');
     const editor = f.$('#rc-editor'); editor.selectionStart = 'echo not-selected\n'.length; editor.selectionEnd = editor.value.length;
     await f.click('#rc-run-selected'); assert.equal(f.calls.length, 0);
@@ -188,7 +190,7 @@ test('terminal UI requires explicit connect, acknowledges only consumed bytes an
   const wait = async () => {await new Promise(resolve => setTimeout(resolve, 120)); await f.settle();};
   try {
     assert.equal(f.win.document.querySelectorAll('#rc-console').length, 1);
-    assert.equal(f.$('#rc-batch-panel').hidden, false); assert.equal(f.$('#rc-terminal-panel').hidden, true);
+    assert.equal(f.$('#rc-batch-panel').hidden, true); assert.equal(f.$('#rc-terminal-panel').hidden, false);
     assert.equal(f.$('#rc-console').contains(f.$('#rc-output')), true);
     assert.equal(f.$('#rc-console').contains(f.$('#rc-terminal-screen')), true);
     await f.click('#rc-console-terminal'); assert.equal(opened.length, 0);
@@ -211,6 +213,7 @@ test('terminal UI requires explicit connect, acknowledges only consumed bytes an
     await f.click('#rc-console-batch'); assert.equal(f.$('#rc-terminal-panel').hidden, true);
     keyboard!('ignored while hidden'); await wait(); assert.equal(writes.length, 2);
     assert.match(f.$('#rc-console-terminal').textContent, /active/);
+    f.$('#rc-run-mode').value = 'batch';
     await f.type('#rc-editor', 'echo batch output'); await f.click('#rc-run'); await f.action('Run without terminal');
     await new Promise(resolve => setTimeout(resolve, 300)); await f.settle();
     assert.equal(f.$('#rc-batch-panel').hidden, false); assert.match(f.$('#rc-output').textContent, /Failed · exit 3/);
@@ -242,23 +245,34 @@ test('terminal does not open without a renderer and shows unsupported X11 withou
 
 test('interactive batch review routes the entire script to a fresh PTY, while output-only runs remain separate', async () => {
   const f = await fixture(), output = channel<any>(), result = deferred<any>(), writes: string[] = [];
-  let opens = 0, key: ((text: string) => void) | undefined;
+  let opens = 0, cancels = 0, key: ((text: string) => void) | undefined;
   const wait = async () => {await new Promise(resolve => setTimeout(resolve, 150)); await f.settle();};
   f.win.FDOTerminal = {create: () => ({write: (_: Uint8Array, consume: () => void) => consume(),
     onData: (fn: (text: string) => void) => {key = fn; return {dispose() {}};}, onResize: () => ({dispose() {}}), getSize: () => ({rows: 24, columns: 80}), focus() {}, reset() {}, dispose() {}})};
   f.ssh.openTerminal = async options => {assert.deepEqual(options.x11, {mode: 'untrusted'}); opens++; return {output: output.iterator, result: result.promise,
-    write: async text => {writes.push(text as string);}, resize: async () => {}, endInput: async () => {}, cancel: async () => ({remoteProcessStopped: null}),
+    write: async text => {writes.push(text as string);}, resize: async () => {}, endInput: async () => {}, cancel: async () => {cancels++; return {remoteProcessStopped: null};},
     close: async () => {await output.close(); result.resolve({reason: 'closed', exitCode: null, signal: null, remoteProcessStopped: null});}};};
   try {
-    f.$('#rc-run-mode').value = 'terminal'; f.$('#rc-terminal-x11').value = 'untrusted';
+    assert.equal(f.$('#rc-run-mode').value, 'terminal');
+    assert.equal(f.$('#rc-terminal-panel').hidden, false);
+    f.$('#rc-terminal-x11').value = 'untrusted';
     await f.type('#rc-editor', "cd /tmp\nexport TEST=ok\nnano notes.txt\nprintf '%s' \"$TEST\"");
     await f.click('#rc-run'); assert.equal(opens, 0); assert.equal(f.calls.length, 0);
     assert.match(f.$('#rc-dialog').textContent, /Interactive PTY/); assert.match(f.$('#rc-dialog').textContent, /up to 5 minutes/); assert.match(f.$('#rc-dialog').textContent, /output-only timeout and capture settings do not apply/);
     await f.action('Run in terminal'); await wait();
     assert.equal(opens, 1); assert.equal(f.calls.length, 0); assert.equal(writes.length, 1);
     assert.equal(f.$('#rc-terminal-panel').hidden, false); assert.equal(f.$('#rc-batch-panel').hidden, true);
-    assert.match(writes[0], /^TERM=xterm-256color exec sh -c '/); assert.match(writes[0], /nano notes.txt\nprintf/);
+    assert.match(writes[0], /^export TERM=xterm-256color; sh -c '/); assert.match(writes[0], /nano notes.txt\nprintf/);
     key!('\x18'); await wait(); assert.equal(writes.at(-1), '\x18');
+    const completionId = /FDO_BATCH_([a-f0-9-]{36})/.exec(writes[0])![1];
+    output.push({sequence: 0, data: Uint8Array.from(Buffer.from(`\x1eFDO_BATCH_${completionId}:0\x1f$ `))}); await wait();
+    assert.match(f.$('#rc-terminal-status').textContent, /Batch finished · exit 0/);
+    assert.match(f.$('#rc-terminal-status').textContent, /Session is still open/);
+    assert.match(f.$('#rc-console-terminal').textContent, /shell ready/);
+    assert.equal(f.$('#rc-terminal-cancel').disabled, false); assert.equal(f.$('#rc-terminal-close').disabled, false);
+    assert.equal(f.$('#rc-terminal-open').disabled, true);
+    key!('echo still connected\r'); await wait(); assert.equal(writes.at(-1), 'echo still connected\r');
+    await f.click('#rc-terminal-cancel'); assert.equal(cancels, 1);
     assert.match(f.$('#rc-terminal-target').textContent, /dev-api-01/);
     await f.click('#rc-terminal-close');
     f.$('#rc-run-mode').value = 'batch'; await f.click('#rc-run'); assert.match(f.$('#rc-dialog').textContent, /no PTY or keyboard input/);
@@ -276,6 +290,7 @@ test('TERM errors explain the missing PTY and review can explicitly switch to a 
     close: async () => {await output.close(); result.resolve({reason: 'closed', exitCode: null, signal: null, remoteProcessStopped: null});},
   };};
   try {
+    f.$('#rc-run-mode').value = 'batch';
     f.$('#rc-terminal-x11').value = 'untrusted';
     await f.type('#rc-editor', 'less /tmp/app.log\necho after'); await f.click('#rc-run'); await f.action('Run without terminal');
     await new Promise(resolve => setTimeout(resolve, 300)); await f.settle();
@@ -288,7 +303,7 @@ test('TERM errors explain the missing PTY and review can explicitly switch to a 
     assert.equal(opens, 0); await f.action('Run in terminal');
     await new Promise(resolve => setTimeout(resolve, 120)); await f.settle();
     assert.equal(opens, 1); assert.equal(f.calls.length, 1);
-    assert.match(writes[0], /^TERM=xterm-256color exec sh -c '/);
+    assert.match(writes[0], /^export TERM=xterm-256color; sh -c '/);
     assert.equal(f.$('#rc-terminal-panel').hidden, false); assert.equal(f.$('#rc-batch-panel').hidden, true);
   } finally {f.win.dispatchEvent(new f.win.Event('pagehide')); f.dom.window.close();}
 });

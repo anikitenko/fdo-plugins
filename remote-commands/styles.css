@@ -455,3 +455,9 @@
 .shell #rc-console header {
   flex-shrink: 0;
 }
+
+.shell #rc-terminal-status.rc-ok {
+  font-weight: 600;
+  border-left: 3px solid currentColor;
+  padding-left: 10px;
+}

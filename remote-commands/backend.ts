@@ -47,8 +47,9 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
       const data = record(input), review = reviews.get(data.token);
       if (!review || review.expires < Date.now() || review.executionMode !== 'terminal') throw new Error('Review this batch for interactive execution before running.');
       reviews.delete(data.token);
+      const completionId = crypto.randomUUID();
       return terminal.terminalOpen({viewId: data.viewId, profileId: review.profileId, expectedProfile: review.profile,
-        mode: review.x11Mode, rows: data.rows, columns: data.columns}, terminalLaunch(review.command));
+        mode: review.x11Mode, rows: data.rows, columns: data.columns}, terminalLaunch(review.command, completionId), completionId);
     },
     run: async (input: unknown) => executeReview(input),
     start(input: unknown) {

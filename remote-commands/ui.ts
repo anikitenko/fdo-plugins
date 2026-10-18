@@ -382,7 +382,7 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
       } catch (e) {if (attempt === revision) {preview.textContent = 'Commands are not ready for execution.'; feedback.textContent = e instanceof Error ? e.message : String(e);}}
     };
     const modeHelp = el('p', '', 'rc-muted');
-    const updateModeHelp = () => {modeHelp.textContent = interactive ? 'This batch opens a PTY and permits keyboard input. X11 is not needed for editors or pagers; leave it Off unless running graphical apps. Programs share one script shell; the terminal closes when the script exits. Interactive profile consent is required.' : 'This run has no PTY or keyboard input. Programs such as less, editors and password prompts need Run in terminal. X11 does not provide a terminal.';};
+    const updateModeHelp = () => {modeHelp.textContent = interactive ? 'This batch opens a PTY and permits keyboard input. X11 is not needed for editors or pagers; leave it Off unless running graphical apps. Programs share one script shell; batch completion is shown and the shell stays open until you cancel or close it. Interactive profile consent is required.' : 'This run has no PTY or keyboard input. Programs such as less, editors and password prompts need Run in terminal. X11 does not provide a terminal.';};
     modePicker.onchange = () => {
       interactive = modePicker.value === 'terminal'; select('rc-run-mode').value = modePicker.value; x11Picker.disabled = !interactive;
       token = ''; revision++; execute.disabled = true; execute.textContent = interactive ? 'Run in terminal' : 'Run without terminal';

@@ -1,8 +1,9 @@
 import type {SSHClient, SSHTerminalSession, SSHTerminalOutput, SSHTerminalResult, SSHCancelResult} from '@anikitenko/fdo-sdk';
 import {serviceMessage} from './model.ts';
+import {createBatchProgress} from './batch-progress.ts';
 
 type Entry = {id: string; viewId: string; profileId: string; mode: 'off' | 'trusted' | 'untrusted'; touched: number; controller: AbortController; session?: SSHTerminalSession;
-  packet?: SSHTerminalOutput; acknowledge?: () => void; done: boolean; released: boolean; result?: SSHTerminalResult;
+  batch?: ReturnType<typeof createBatchProgress>; nextSequence: number; packet?: SSHTerminalOutput; acknowledge?: () => void; done: boolean; released: boolean; result?: SSHTerminalResult;
   error?: {code: string; message: string}; cancellation?: SSHCancelResult; initializing: boolean; cancelRequested: boolean; cancelTask?: Promise<void>};
 
 /** One held packet per view: only renderer consumption allows another SDK read. No transcript. */
@@ -42,7 +43,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
   }, 1000);
   timer.unref?.();
   return {
-    terminalOpen(input: unknown, launch?: string) {
+    terminalOpen(input: unknown, launch?: string, completionId?: string) {
       const value = data(input), viewId = key(value.viewId), profileId = key(value.profileId);
       const mode = value.mode;
       if (!['off', 'trusted', 'untrusted'].includes(mode as string)) throw new Error('Choose an X11 mode.');
@@ -50,7 +51,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
       const rows = dimension(value.rows), columns = dimension(value.columns);
       if (entries.has(viewId)) throw new Error('Close the current terminal before opening another.');
       if (entries.size >= 4) throw new Error('Close an unused terminal before opening another.');
-      const entry: Entry = {id: crypto.randomUUID(), viewId, profileId, mode: mode as 'off' | 'trusted' | 'untrusted', touched: Date.now(), controller: new AbortController(), done: false, released: false, initializing: !!launch, cancelRequested: false};
+      const entry: Entry = {id: crypto.randomUUID(), viewId, profileId, mode: mode as 'off' | 'trusted' | 'untrusted', touched: Date.now(), controller: new AbortController(), done: false, released: false, nextSequence: 0, ...(completionId ? {batch: createBatchProgress(completionId)} : {}), initializing: !!launch, cancelRequested: false};
       entries.set(viewId, entry);
       void (async () => {
         try {
@@ -70,13 +71,20 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
           const result = session.result.then(value => {entry.result = value;}, error => {fail(entry, error);});
           if (entry.released) {await session.close(); await result; return;}
           if (entry.cancelRequested) cancel(entry);
+          const publish = async (data: Uint8Array) => {
+            for (let offset = 0; offset < data.length && !entry.released; offset += 32768) {
+              const packet = {sequence: entry.nextSequence++, data: data.slice(offset, offset + 32768)};
+              await new Promise<void>(resolve => {entry.acknowledge = resolve; entry.packet = packet;});
+            }
+          };
           const output = (async () => {
             try {
               for await (const packet of session.output) {
                 if (entry.released) break;
-                await new Promise<void>(resolve => {entry.acknowledge = resolve; entry.packet = packet;});
+                await publish(entry.batch ? entry.batch.push(packet.data) : packet.data);
               }
             } catch (error) {fail(entry, error); void session.close().catch(() => {});}
+            finally {if (!entry.released && entry.batch) await publish(entry.batch.flush());}
           })();
           if (launch) {
             try {await session.write(launch); entry.initializing = false;}
@@ -95,7 +103,7 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
         entry.packet = undefined; entry.acknowledge?.(); entry.acknowledge = undefined;
       } else if (entry.packet && (value.ack as number) >= entry.packet.sequence) throw new Error('Terminal acknowledgement is ahead of output.');
       return {ready: !!entry.session && !entry.initializing && !entry.done && !entry.result && !entry.error, packet: entry.packet ? {sequence: entry.packet.sequence, bytes: Array.from(entry.packet.data)} : null,
-        done: entry.done, result: entry.result, error: entry.error, cancelRequested: entry.cancelRequested, cancellation: entry.cancellation};
+        batch: entry.batch?.snapshot(), done: entry.done, result: entry.result, error: entry.error, cancelRequested: entry.cancelRequested, cancellation: entry.cancellation};
     },
     async terminalInput(input: unknown) {
       const {entry, value} = current(input);

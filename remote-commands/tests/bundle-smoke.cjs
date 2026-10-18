@@ -111,11 +111,12 @@ function configure() {
       assert.equal(consolePanel.contains(document.querySelector('#rc-output')), true);
       assert.equal(consolePanel.contains(document.querySelector('#rc-terminal-screen')), true);
       assert.equal(document.querySelector('#rc-terminal-panel').classList.contains('rc-panel'), false);
-      assert.equal(document.querySelector('#rc-terminal-panel').hidden, true);
-      assert.equal(document.querySelector('#rc-batch-panel').hidden, false);
-      assert.equal(document.querySelector('#rc-console-batch').getAttribute('aria-pressed'), 'true');
-      assert.equal(document.querySelector('#rc-console-terminal').getAttribute('aria-pressed'), 'false');
+      assert.equal(document.querySelector('#rc-terminal-panel').hidden, false);
+      assert.equal(document.querySelector('#rc-batch-panel').hidden, true);
+      assert.equal(document.querySelector('#rc-console-batch').getAttribute('aria-pressed'), 'false');
+      assert.equal(document.querySelector('#rc-console-terminal').getAttribute('aria-pressed'), 'true');
       assert.equal(document.querySelectorAll('#rc-terminal-screen').length, 1);
+      assert.equal(document.querySelector('#rc-run-mode').value, 'terminal');
       assert.equal(document.querySelector('#rc-workspace').hasAttribute('hidden'), true);
       // jsdom's cascade does not reliably honor !important over later rules.
       // Verify the browser's hidden-state contract through the actual CSSOM.
