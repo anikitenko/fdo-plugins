@@ -62,6 +62,7 @@ test("billing reads are paced, retried within bounds, then deferred across refre
     policy = new CostReadCoordinator({
       clock: f.clock,
       spacingMs: 20000,
+      maxWaitMs: 90000,
       jitter: () => 0,
     });
   let calls = 0;
@@ -437,4 +438,121 @@ test("host-relayed Retry-After opens shared billing cooldown without exposing di
   assert.equal(done.result.coverage.costs, "Throttled / deferred");
   assert.equal(done.result.warnings.length, 1);
   assert.doesNotMatch(JSON.stringify(done), /PRIVATE/);
+  const check = b.start({ kind: "accounts", mode: "live" });
+  await new Promise((r) => setTimeout(r, 0));
+  const account = b.poll(check) as any;
+  assert.deepEqual(
+    account.request.payload.args.slice(0, 2),
+    ["account", "show"],
+    "CLI sign-in checks bypass an active billing cooldown",
+  );
+  b.accept({
+    ...check,
+    nonce: account.nonce,
+    response: { ok: false, code: "ACCESS_DENIED", error: "fixture cleanup" },
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal((b.poll(check) as any).state, "error");
+});
+
+test("ordinary CLI failures do not pace the next command and default throttling fails fast", async () => {
+  const f = fixture();
+  const policy = new CostReadCoordinator({ clock: f.clock, jitter: () => 0 });
+  const progress: string[] = [];
+  await assert.rejects(
+    () =>
+      policy.request("tenant", async () => {
+        throw new Error("invalid args");
+      }),
+    /invalid args/,
+  );
+  const before = f.clock.now();
+  await policy.request("tenant", async () => "ok", {
+    progress: (message) => progress.push(message),
+  });
+  assert.equal(
+    f.clock.now(),
+    before,
+    "A failed command must not delay a subsequent command",
+  );
+  assert.match(progress.at(-1)!, /Requesting.*awaiting host/);
+  let calls = 0;
+  const start = f.clock.now();
+  await assert.rejects(
+    () =>
+      policy.request("tenant", async () => {
+        calls++;
+        throw throttle(60000);
+      }),
+    BillingCooldownError,
+  );
+  assert.equal(calls, 1);
+  assert.ok(
+    f.clock.now() - start <= 1000,
+    "Long throttling waits return a cooldown immediately",
+  );
+});
+test("host rejection cannot masquerade as Azure throttling, and live command progress replaces pacing", async () => {
+  const b = createBackend(
+    () => ({ get: () => undefined, set() {}, flush: async () => {} }) as any,
+  );
+  await b.bootstrap();
+  const { jobId } = b.start({ kind: "accounts", mode: "live" });
+  await new Promise((r) => setTimeout(r, 0));
+  const first = b.poll({ jobId }) as any;
+  const waiting = b.poll({ jobId }) as any;
+  assert.match(waiting.progress, /Awaiting host: Check Azure CLI/);
+  b.accept({
+    jobId,
+    nonce: first.nonce,
+    response: {
+      ok: false,
+      code: "ACCESS_DENIED",
+      error: "Host denied a throttling test command",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  const failed = b.poll({ jobId }) as any;
+  assert.equal(failed.state, "error");
+  assert.match(failed.error, /access denied/);
+  assert.equal(failed.progress, undefined);
+});
+
+test("sanitized CLI diagnostics distinguish invalid arguments, Azure denial and connectivity", async () => {
+  const b = createBackend(
+    () => ({ get: () => undefined, set() {}, flush: async () => {} }) as any,
+  );
+  await b.bootstrap();
+  for (const [stderr, expected] of [
+    [
+      "az: error: unrecognized arguments: --bad SECRET",
+      /rejected the command arguments/,
+    ],
+    [
+      "AuthorizationFailed: access to PRIVATE is denied",
+      /Azure denied this request/,
+    ],
+    [
+      "ConnectionError: CERTIFICATE_VERIFY_FAILED PRIVATE",
+      /could not connect to Azure/,
+    ],
+  ] as const) {
+    const { jobId } = b.start({ kind: "accounts", mode: "live" });
+    await new Promise((r) => setTimeout(r, 0));
+    const poll = b.poll({ jobId }) as any;
+    b.accept({
+      jobId,
+      nonce: poll.nonce,
+      response: {
+        ok: false,
+        code: "PROCESS_EXIT_NON_ZERO",
+        result: { stderr },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const failed = b.poll({ jobId }) as any;
+    assert.equal(failed.state, "error");
+    assert.match(failed.error, expected);
+    assert.doesNotMatch(JSON.stringify(failed), /SECRET|PRIVATE/);
+  }
 });

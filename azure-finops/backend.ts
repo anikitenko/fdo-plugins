@@ -115,7 +115,23 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       /ENOENT|not found|not executable/i.test(text) ||
       code === "PROCESS_SPAWN_FAILED";
     const auth = /az login|please run|AADSTS|expired|not logged/i.test(text);
-    const throttled = /429|TooManyRequests|throttl/i.test(text);
+    const throttled =
+      !missing &&
+      !auth &&
+      ["PROCESS_EXIT_NON_ZERO", "CLI_FAILED"].includes(code) &&
+      /\b429\b|\bTooManyRequests\b|\bthrottled\b|\bthrottling\b/i.test(text);
+    const invalidArgs =
+      /unrecognized arguments|the following arguments are required|invalid choice|usage: az\b/i.test(
+        text,
+      );
+    const azureDenied =
+      /AuthorizationFailed|Forbidden|AuthorizationPermissionMismatch|DenyAssignmentAuthorizationFailed/i.test(
+        text,
+      );
+    const network =
+      /NameResolutionError|Failed to resolve|Temporary failure in name resolution|CERTIFICATE_VERIFY_FAILED|ConnectionError|connection refused|connection timed out/i.test(
+        text,
+      );
     return Object.assign(
       new Error(
         missing
@@ -124,10 +140,16 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
             ? "Azure CLI is not authenticated for this tenant. Run az login manually outside FDO, then Check connection."
             : throttled
               ? "Azure throttled this request. Billing reads use a bounded retry/cooldown policy; resource mutations are never automatically retried."
-              : code === "ACCESS_DENIED" ||
-                  /scope|argument|allowlist|capability|denied/i.test(text)
-                ? `Host or Azure access denied (${code}). See Settings → Custom capability setup. The plugin did not bypass policy.`
-                : `Azure CLI request failed (${code}). Inspect sanitized host diagnostics; no credentials or raw output were saved.`,
+              : invalidArgs
+                ? "Azure CLI rejected the command arguments. Check the installed Azure CLI version and the host-approved argument policy; this failure was not retried."
+                : azureDenied
+                  ? `Azure denied this request (${code}). Check the signed-in identity's permissions for the exact target; this failure was not retried.`
+                  : network
+                    ? `Azure CLI could not connect to Azure (${code}). Check host connectivity, proxy and certificate configuration; this failure was not retried.`
+                    : code === "ACCESS_DENIED" ||
+                        /scope|argument|allowlist|capability|denied/i.test(text)
+                      ? `Host or Azure access denied (${code}). See Settings → Custom capability setup. The plugin did not bypass policy.`
+                      : `Azure CLI request failed (${code}). Inspect sanitized host diagnostics; no credentials or raw output were saved.`,
       ),
       {
         code,
@@ -157,6 +179,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
           );
           return;
         }
+        job.progress = `Awaiting host: ${reason}`;
         const nonce = crypto.randomUUID();
         const request = createScopedProcessExecActionRequest(scope, {
           command: executable,
@@ -657,6 +680,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
         throw new Error("Stale or mismatched host response.");
       clearTimeout(pending.deadline);
       job.pending = undefined;
+      job.progress = undefined;
       const response = input.response;
       if (job.operation && typeof response?.correlationId === "string")
         job.operation.correlationIds.push(response.correlationId.slice(0, 200));

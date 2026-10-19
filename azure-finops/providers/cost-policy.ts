@@ -69,9 +69,9 @@ export class CostReadCoordinator {
       now: Date.now,
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     };
-    this.spacing = options.spacingMs ?? 20000;
+    this.spacing = options.spacingMs ?? 1000;
     this.retries = options.retries ?? 2;
-    this.waitLimit = options.maxWaitMs ?? 90000;
+    this.waitLimit = options.maxWaitMs ?? 5000;
     this.jitter = options.jitter ?? (() => Math.floor(Math.random() * 1000));
   }
   clear() {
@@ -123,10 +123,17 @@ export class CostReadCoordinator {
       for (let attempt = 0; ; attempt++) {
         await this.wait(gate.nextStart, context, "Pacing Azure billing reads");
         gate.nextStart = this.clock.now() + this.spacing;
+        context.progress?.(
+          "Requesting Azure billing data; awaiting host execution",
+        );
         try {
           return await work();
         } catch (error) {
-          if (!isBillingThrottle(error)) throw error;
+          if (!isBillingThrottle(error)) {
+            // A rejected/invalid CLI command must not impose pacing on subsequent reads.
+            gate.nextStart = 0;
+            throw error;
+          }
           const delay =
             Math.max(
               error.retryAfterMs ?? 0,
