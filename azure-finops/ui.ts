@@ -124,6 +124,78 @@ export function mountFinOps(root: HTMLElement) {
   let serviceData: ServiceInspection | undefined,
     serviceSequence = 0,
     servicePending = "";
+  let chartEpoch = 0,
+    refreshing = false;
+  const serviceSearch: Record<string, string> = {};
+  const assetViews: Record<
+    string,
+    { query: string; category: string; index: number; candidatePage: number }
+  > = {};
+  const viewKey = "azure-finops.exploration.v1";
+  function rememberView() {
+    if (!scope) return;
+    const prefs = {
+      version: 1,
+      mode: settings.mode,
+      cli: settings.cli,
+      processScope: settings.processScope,
+      page,
+      scope,
+      filters,
+      columns,
+      sort,
+      direction,
+      tablePage,
+      detailTab,
+      detailWidth,
+      selectionId: selection?.id,
+      serviceId: servicePending || serviceData?.target.id,
+      serviceSearch,
+      assetViews,
+      scroll: (document.scrollingElement ?? document.documentElement).scrollTop,
+      tableScroll: $("af-resource-table")?.scrollTop ?? 0,
+    };
+    win.__afFinOpsView = structuredClone(prefs);
+    try {
+      window.sessionStorage.setItem(viewKey, JSON.stringify(prefs));
+    } catch {
+      /* Sandboxed hosts can deny browser storage; keep the in-memory fallback. */
+    }
+  }
+  function rememberedView(): any {
+    try {
+      return (
+        JSON.parse(window.sessionStorage.getItem(viewKey) ?? "null") ??
+        win.__afFinOpsView
+      );
+    } catch {
+      return win.__afFinOpsView;
+    }
+  }
+  function restoreScroll(view: any) {
+    if ($("af-resource-table"))
+      $("af-resource-table").scrollTop = Number(view?.tableScroll) || 0;
+    (document.scrollingElement ?? document.documentElement).scrollTop =
+      Number(view?.scroll) || 0;
+  }
+  function viewMatches(view: any) {
+    return (
+      view?.version === 1 &&
+      view.mode === settings.mode &&
+      view.cli === settings.cli &&
+      view.processScope === settings.processScope &&
+      accounts.some(
+        (a) =>
+          a.id === view.scope?.subscriptionId &&
+          a.tenantId === view.scope?.tenantId,
+      ) &&
+      Array.isArray(view.scope?.groupIds) &&
+      view.scope.groupIds.every((g: unknown) => typeof g === "string") &&
+      ["ActualCost", "AmortizedCost"].includes(view.scope.basis) &&
+      Number.isFinite(Date.parse(view.scope.from)) &&
+      Number.isFinite(Date.parse(view.scope.to))
+    );
+  }
   const navNames: Record<string, string> = {
     overview: "Overview",
     groups: "Resource groups",
@@ -400,8 +472,16 @@ export function mountFinOps(root: HTMLElement) {
     $("af-main").replaceChildren(el("p", "Loading the new scope…", "af-empty"));
     message("Loading the new scope. Previous results have been cleared.");
   }
-  async function loadScope() {
-    const ticket = generation;
+  async function loadScope(preserve = false) {
+    let ticket = generation;
+    const oldProfile = snapshot?.cliAccount;
+    let view = preserve
+      ? {
+          scroll: (document.scrollingElement ?? document.documentElement)
+            .scrollTop,
+          tableScroll: $("af-resource-table")?.scrollTop ?? 0,
+        }
+      : undefined;
     try {
       let groupIssue = "";
       try {
@@ -413,12 +493,18 @@ export function mountFinOps(root: HTMLElement) {
         scope.groupIds = scope.groupIds.filter((g) =>
           groups.some((v) => id(v.id) === g),
         );
-        if (prior !== scope.groupIds.length)
+        if (prior !== scope.groupIds.length) {
+          if (preserve) {
+            invalidate();
+            ticket = generation;
+            preserve = false;
+          }
           groupIssue =
             "Unavailable group selections were cleared. Scope now uses " +
             (scope.groupIds.length
               ? `${scope.groupIds.length} valid groups.`
               : "All accessible groups.");
+        }
       } catch (error) {
         if (ticket !== generation || !active) return;
         groups = [];
@@ -431,6 +517,32 @@ export function mountFinOps(root: HTMLElement) {
       groupLabel();
       const result = await run("snapshot", { scope: readScope() }, ticket);
       if (ticket !== generation || !active) return;
+      if (
+        oldProfile &&
+        result.cliAccount &&
+        (oldProfile.user !== result.cliAccount.user ||
+          oldProfile.userType !== result.cliAccount.userType)
+      ) {
+        serviceData = undefined;
+        servicePending = "";
+        selection = undefined;
+        serviceSequence++;
+        detailSequence++;
+      }
+      if (
+        selection &&
+        result.coverage.inventory === "Available" &&
+        !result.resources.some((r: Resource) => id(r.id) === id(selection!.id))
+      )
+        selection = undefined;
+      if (
+        serviceData &&
+        result.coverage.inventory === "Available" &&
+        !result.resources.some(
+          (r: Resource) => id(r.id) === id(serviceData!.target.id),
+        )
+      )
+        serviceData = undefined;
       snapshot = result;
       if (groupIssue) snapshot!.warnings.unshift(groupIssue);
       scope = result.scope;
@@ -451,50 +563,107 @@ export function mountFinOps(root: HTMLElement) {
         );
         accountControls();
       }
+      const focused = document.activeElement as HTMLInputElement | null;
+      const focus =
+        preserve && focused && $("af-main").contains(focused)
+          ? {
+              id: focused.id,
+              label: focused.getAttribute("aria-label"),
+              start: focused.selectionStart,
+              end: focused.selectionEnd,
+            }
+          : undefined;
+      if (preserve)
+        view = {
+          scroll: (document.scrollingElement ?? document.documentElement)
+            .scrollTop,
+          tableScroll: $("af-resource-table")?.scrollTop ?? 0,
+        };
       renderData();
+      if (preserve) {
+        const next = focus?.id
+          ? [...root.querySelectorAll<HTMLElement>("[id]")].find(
+              (n) => n.id === focus.id,
+            )
+          : focus?.label
+            ? [
+                ...$("af-main").querySelectorAll<HTMLElement>("[aria-label]"),
+              ].find((n) => n.getAttribute("aria-label") === focus.label)
+            : undefined;
+        next?.focus({ preventScroll: true });
+        if (
+          next instanceof HTMLInputElement &&
+          ["text", "search"].includes(next.type) &&
+          focus?.start != null
+        )
+          next.setSelectionRange(focus.start, focus.end ?? focus.start);
+        restoreScroll(view);
+      }
+      rememberView();
     } catch (error) {
       if (ticket === generation && active) {
         connection();
         report(error);
-        $("af-main").replaceChildren(
-          el(
-            "div",
-            "Data is unavailable for this scope. Check connection, permissions and the custom capability in Settings, then Refresh.",
-            "af-empty",
-          ),
-        );
+        if (preserve && snapshot)
+          $("af-freshness").textContent =
+            `Refresh failed · showing data from ${new Date(snapshot.fetchedAt).toLocaleString()}`;
+        if (!preserve)
+          $("af-main").replaceChildren(
+            el(
+              "div",
+              "Data is unavailable for this scope. Check connection, permissions and the custom capability in Settings, then Refresh.",
+              "af-empty",
+            ),
+          );
       }
     }
   }
   function disposeCharts() {
+    chartEpoch++;
     for (const chart of charts.splice(0)) chart.dispose();
   }
   async function chart(container: HTMLElement, config: any) {
+    const epoch = chartEpoch,
+      ticket = generation;
+    const current = () =>
+      active &&
+      ticket === generation &&
+      epoch === chartEpoch &&
+      container.isConnected;
+    // Charts must be attached before the host starts its asynchronous renderer.
+    await Promise.resolve();
+    if (!current()) return;
     try {
       const api = await win.FDOCharts;
-      if (!api?.create) {
-        container.append(
-          el(
-            "p",
-            "Charts are unavailable in this host; the data summary remains available.",
-            "af-muted",
-          ),
-        );
-        return;
-      }
+      if (!api?.create)
+        throw new Error("FDOCharts.create is unavailable in this host");
+      if (!current()) return;
       const controller = await api.create(container, config);
-      if (!active || generation !== generation || !container.isConnected)
-        controller.dispose();
+      if (!current()) controller.dispose();
       else charts.push(controller);
-    } catch {
-      if (container.isConnected)
-        container.append(
-          el(
-            "p",
-            "Chart unavailable. See the accompanying data table.",
-            "af-muted",
-          ),
-        );
+    } catch (error) {
+      if (!current()) return;
+      const failure = el("div", "", "af-callout");
+      failure.append(
+        el("p", "Chart unavailable. The data table remains available."),
+      );
+      const details = el("details");
+      details.append(
+        el("summary", "Chart error details"),
+        el(
+          "p",
+          error instanceof Error ? error.message : String(error),
+          "af-muted",
+        ),
+      );
+      failure.append(
+        details,
+        button("Retry chart", () => {
+          failure.remove();
+          return chart(container, config);
+        }),
+      );
+      container.append(failure);
     }
   }
   function cards() {
@@ -1868,9 +2037,16 @@ export function mountFinOps(root: HTMLElement) {
     search.type = "search";
     search.placeholder = "Search service assets, IDs and configuration…";
     search.setAttribute("aria-label", "Search service inventory");
-    let index = 0,
-      query = "",
-      category = "";
+    const state = (assetViews[s.target.id] ??= {
+      query: "",
+      category: "",
+      index: 0,
+      candidatePage: 0,
+    });
+    let index = state.index,
+      query = state.query,
+      category = state.category;
+    search.value = query;
     const rows = () =>
       s.assets.filter(
         (a) =>
@@ -1880,6 +2056,7 @@ export function mountFinOps(root: HTMLElement) {
             .includes(query),
       );
     const draw = () => {
+      Object.assign(state, { index, query, category });
       const filtered = rows();
       index = Math.min(index, Math.max(0, Math.ceil(filtered.length / 25) - 1));
       list.replaceChildren(
@@ -2015,6 +2192,7 @@ export function mountFinOps(root: HTMLElement) {
     search.type = "search";
     search.placeholder = "Search scoped workspaces, accounts and projects…";
     search.setAttribute("aria-label", `Search ${kind} resources`);
+    search.value = serviceSearch[kind] ?? "";
     panel.append(
       el(
         "h2",
@@ -2096,7 +2274,10 @@ export function mountFinOps(root: HTMLElement) {
           ),
         );
     };
-    search.oninput = draw;
+    search.oninput = () => {
+      serviceSearch[kind] = search.value;
+      draw();
+    };
     draw();
     if (servicePending)
       host.append(
@@ -2162,8 +2343,19 @@ export function mountFinOps(root: HTMLElement) {
       );
     const candidates = el("div", "", "af-stack"),
       candidatePages = el("div", "", "af-row");
-    let candidatePage = 0;
+    const state = (assetViews[s.target.id] ??= {
+      query: "",
+      category: "",
+      index: 0,
+      candidatePage: 0,
+    });
+    let candidatePage = state.candidatePage;
     const drawCandidates = () => {
+      candidatePage = Math.min(
+        candidatePage,
+        Math.max(0, Math.ceil(s.candidates.length / 25) - 1),
+      );
+      state.candidatePage = candidatePage;
       candidates.replaceChildren();
       for (const c of s.candidates.slice(
         candidatePage * 25,
@@ -3045,8 +3237,15 @@ export function mountFinOps(root: HTMLElement) {
         navigate("settings");
         return;
       }
-      invalidate();
-      await loadScope();
+      if (refreshing) return;
+      refreshing = true;
+      $<HTMLButtonElement>("af-refresh").disabled = true;
+      try {
+        await loadScope(true);
+      } finally {
+        refreshing = false;
+        $<HTMLButtonElement>("af-refresh").disabled = false;
+      }
     } catch (e) {
       report(e);
     }
@@ -3218,6 +3417,12 @@ export function mountFinOps(root: HTMLElement) {
       "Local data loading stopped. This does not cancel any Azure operation.",
     );
   });
+  for (const event of ["click", "input", "change"])
+    listen(root, event, () => {
+      queueMicrotask(() => {
+        if (active) rememberView();
+      });
+    });
   const staleTimer = window.setInterval(() => {
     if (snapshot && Date.now() - Date.parse(snapshot.fetchedAt) > 300000)
       $("af-freshness").textContent =
@@ -3248,9 +3453,89 @@ export function mountFinOps(root: HTMLElement) {
         basis: "ActualCost",
         ...scopeDates("30"),
       };
+      const remembered = rememberedView();
+      const restore = viewMatches(remembered);
+      if (restore) {
+        scope = structuredClone(remembered.scope);
+        if (navNames[remembered.page]) page = remembered.page;
+        for (const key of Object.keys(filters))
+          if (typeof remembered.filters?.[key] === "string")
+            filters[key] = remembered.filters[key];
+        if (Array.isArray(remembered.columns))
+          columns = remembered.columns.filter(
+            (v: unknown) => typeof v === "string",
+          );
+        sort = typeof remembered.sort === "string" ? remembered.sort : sort;
+        direction = remembered.direction === "asc" ? "asc" : "desc";
+        tablePage = Math.max(0, Number(remembered.tablePage) || 0);
+        detailWidth = Number(remembered.detailWidth) || 0;
+        Object.assign(serviceSearch, remembered.serviceSearch ?? {});
+        Object.assign(assetViews, remembered.assetViews ?? {});
+        $<HTMLSelectElement>("af-basis").value = scope.basis;
+        $<HTMLSelectElement>("af-period").value = "custom";
+        $<HTMLInputElement>("af-from").value = scope.from.slice(0, 10);
+        $<HTMLInputElement>("af-to").value = scope.to.slice(0, 10);
+        $("af-custom-dates").hidden = false;
+      }
       accountControls();
       viewOptions();
+      const restoreTicket = generation;
       await loadScope();
+      if (
+        restore &&
+        snapshot &&
+        generation === restoreTicket &&
+        page === remembered.page
+      ) {
+        navigate(page);
+        const target = snapshot.resources.find(
+          (r) =>
+            id(r.id) ===
+            id(remembered.serviceId ?? remembered.selectionId ?? ""),
+        );
+        if (target && page === "resources" && remembered.selectionId) {
+          await openResource(target);
+          if (
+            generation === restoreTicket &&
+            page === "resources" &&
+            selection?.id === target.id
+          ) {
+            detailTab = remembered.detailTab ?? "origin";
+            renderDetail();
+          }
+        }
+        if (
+          target &&
+          (page === "databricks" || page === "foundry") &&
+          remembered.serviceId
+        ) {
+          const ticket = generation,
+            seq = ++serviceSequence,
+            restoringPage = page;
+          servicePending = target.id;
+          renderServices(page);
+          try {
+            const inspected = await run("service", { target }, ticket);
+            if (ticket === generation && seq === serviceSequence && active) {
+              serviceData = inspected;
+              servicePending = "";
+              if (
+                page === restoringPage &&
+                (page === "databricks" || page === "foundry")
+              )
+                renderServices(page);
+            }
+          } catch (e) {
+            if (ticket === generation) {
+              servicePending = "";
+              report(e);
+            }
+          }
+        }
+        if (generation === restoreTicket && page === remembered.page)
+          restoreScroll(remembered);
+        rememberView();
+      }
     } catch (e) {
       if (!settings)
         settings = {
@@ -3269,7 +3554,10 @@ export function mountFinOps(root: HTMLElement) {
   })();
   const cleanup = () => {
     if (!active) return;
+    rememberView();
     active = false;
+    delete (root as any).__afCleanup;
+    if (win.__afFinOpsCleanup === cleanup) delete win.__afFinOpsCleanup;
     generation++;
     detailSequence++;
     disposeCharts();

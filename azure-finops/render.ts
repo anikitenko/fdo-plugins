@@ -38,5 +38,5 @@ export function render(): string {
   </main>`);
 }
 export function onLoad(): string {
-  return `(()=>{const root=document.getElementById('azure-finops');if(!root)return;if(root.__afCleanup)root.__afCleanup();root.__afCleanup=(${mountFinOps.toString()})(root);})();`;
+  return `(()=>{const root=document.getElementById('azure-finops');if(!root)return;if(root.__afCleanup)return root.__afCleanup;if(window.__afFinOpsCleanup)window.__afFinOpsCleanup();const cleanup=(${mountFinOps.toString()})(root);root.__afCleanup=cleanup;window.__afFinOpsCleanup=cleanup;return cleanup;})();`;
 }

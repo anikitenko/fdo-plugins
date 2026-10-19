@@ -210,6 +210,24 @@ process.parentPort.postMessage = () => {};
       .getByRole("button", { name: "Inspect service", exact: true })
       .click();
     await page.getByText("analytics-interactive", { exact: true }).waitFor();
+    await page
+      .getByRole("searchbox", { name: "Search service inventory", exact: true })
+      .fill("reporting-sql");
+    await page.locator("#af-refresh").click();
+    await page.waitForFunction(
+      () => !document.getElementById("af-refresh").disabled,
+    );
+    assert.equal(
+      await page
+        .getByRole("searchbox", { name: "Search service inventory", exact: true })
+        .inputValue(),
+      "reporting-sql",
+    );
+    assert.equal(await page.locator(".af-service-detail").count(), 1);
+    await page
+      .getByRole("searchbox", { name: "Search service inventory", exact: true })
+      .fill("");
+
     await page.screenshot({
       path: "/private/tmp/azure-finops-databricks.png",
       fullPage: true,
@@ -221,6 +239,19 @@ process.parentPort.postMessage = () => {};
       .getByRole("button", { name: "Inspect service", exact: true })
       .click();
     await page.getByText("chat-prod", { exact: true }).waitFor();
+    await page.evaluate(
+      ({ markup, source }) => {
+        document.body.innerHTML = markup;
+        window.eval(source);
+      },
+      { markup: render, source: onLoad },
+    );
+    await page.getByText("chat-prod", { exact: true }).waitFor();
+    assert.equal(
+      await page.locator('[data-page="foundry"]').getAttribute("aria-current"),
+      "page",
+    );
+
     await page.screenshot({
       path: "/private/tmp/azure-finops-foundry.png",
       fullPage: true,

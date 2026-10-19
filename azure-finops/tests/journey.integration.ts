@@ -446,3 +446,163 @@ test("switching from Demo to a denied Live connection clears the demo identity i
     f.cleanup();
   }
 });
+
+test("same-scope refresh and host remount retain service exploration without restoring old Azure data", async () => {
+  const f = await fixture();
+  try {
+    await f.click('[data-page="databricks"]');
+    await f.action("Inspect service");
+    await f.wait(() => f.$(".af-service-detail"));
+    await f.input('[aria-label="Search databricks resources"]', "analytics");
+    await f.input('[aria-label="Search service inventory"]', "reporting-sql");
+    await f.click("#af-refresh");
+    await f.wait(() => f.$("#af-progress").hidden);
+    assert.equal(f.$("#af-title").textContent, "Azure Databricks inspection");
+    assert.ok(f.$(".af-service-detail"));
+    assert.equal(
+      f.$('[aria-label="Search service inventory"]').value,
+      "reporting-sql",
+    );
+    assert.equal(
+      f.$('[aria-label="Search databricks resources"]').value,
+      "analytics",
+    );
+    const saved = JSON.parse(
+      f.win.sessionStorage.getItem("azure-finops.exploration.v1"),
+    );
+    assert.ok(saved.serviceId);
+    assert.equal(saved.snapshot, undefined);
+    assert.equal(saved.serviceData, undefined);
+    f.win.document.body.innerHTML = render();
+    const cleanup = f.win.eval(onLoad());
+    assert.equal(
+      typeof cleanup,
+      "function",
+      "FDO receives the cleanup for its view lifecycle",
+    );
+    await f.wait(() => f.$(".af-service-detail"));
+    assert.equal(f.$("#af-title").textContent, "Azure Databricks inspection");
+    assert.equal(
+      f.$('[aria-label="Search service inventory"]').value,
+      "reporting-sql",
+    );
+    assert.equal(
+      f.$('[aria-label="Search databricks resources"]').value,
+      "analytics",
+    );
+    assert.equal(f.hostRequests.length, 0);
+  } finally {
+    f.cleanup();
+  }
+});
+test("repeated on-load initialization keeps the current view and makes no new backend requests", async () => {
+  const f = await fixture();
+  try {
+    await f.click('[data-page="foundry"]');
+    const original = f.win.createBackendReq;
+    let calls = 0;
+    f.win.createBackendReq = (...args: any[]) => {
+      calls++;
+      return original(...args);
+    };
+    const first = f.win.eval(onLoad()),
+      second = f.win.eval(onLoad());
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(first, second);
+    assert.equal(calls, 0);
+    assert.equal(f.$("#af-title").textContent, "Foundry & AI inspection");
+  } finally {
+    f.cleanup();
+  }
+});
+test("charts await the connected host API, dispose late controllers and expose retryable renderer errors", async () => {
+  const f = await fixture();
+  try {
+    let resolve!: (controller: any) => void,
+      disposed = 0,
+      calls = 0;
+    f.win.FDOCharts = {
+      create: async (node: HTMLElement, config: any) => {
+        calls++;
+        assert.equal(node.isConnected, true);
+        assert.equal(config.type, "area");
+        return new Promise((r) => {
+          resolve = r;
+        });
+      },
+    };
+    await f.click('[data-page="overview"]');
+    await f.wait(() => calls === 1);
+    await f.click('[data-page="resources"]');
+    resolve({
+      dispose() {
+        disposed++;
+      },
+    });
+    await f.wait(() => disposed === 1);
+    f.win.FDOCharts = {
+      create: async () => {
+        throw new Error("Renderer chunk failed to load");
+      },
+    };
+    await f.click('[data-page="overview"]');
+    await f.wait(() =>
+      f.$("#af-main").textContent.includes("Renderer chunk failed to load"),
+    );
+    f.win.FDOCharts = {
+      create: async (node: HTMLElement) => {
+        node.appendChild(f.win.document.createElement("svg"));
+        return { dispose() {} };
+      },
+    };
+    await f.action("Retry chart");
+    await f.wait(() => f.$(".af-chart svg"));
+    assert.equal(
+      f.$("#af-main").textContent.includes("Renderer chunk failed to load"),
+      false,
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("typing and focus survive a snapshot completing during service exploration", async () => {
+  const f = await fixture();
+  let release!: () => void;
+  try {
+    await f.click('[data-page="databricks"]');
+    await f.action("Inspect service");
+    await f.wait(() => f.$(".af-service-detail"));
+    const original = f.win.createBackendReq;
+    let waiting = false;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    f.win.createBackendReq = async (type: string, payload: any) => {
+      const response = await original(type, payload);
+      if (
+        payload.handler === "azure-finops.poll" &&
+        response?.data?.result?.resources
+      ) {
+        waiting = true;
+        await held;
+      }
+      return response;
+    };
+    await f.click("#af-refresh");
+    await f.wait(() => waiting);
+    const search = f.$('[aria-label="Search service inventory"]');
+    search.focus();
+    await f.input('[aria-label="Search service inventory"]', "reporting-sql");
+    search.setSelectionRange(4, 4);
+    release();
+    await f.wait(() => !f.$("#af-refresh").disabled);
+    const updated = f.$('[aria-label="Search service inventory"]');
+    assert.equal(updated.value, "reporting-sql");
+    assert.equal(f.win.document.activeElement, updated);
+    assert.equal(updated.selectionStart, 4);
+  } finally {
+    release?.();
+    f.cleanup();
+  }
+});
