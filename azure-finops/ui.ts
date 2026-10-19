@@ -133,10 +133,16 @@ export function mountFinOps(root: HTMLElement) {
   > = {};
   let viewSaveTimer: number | undefined;
   let viewSaveWarning = false;
+  let explorationViewId = "",
+    navigationSequence = 0;
   function saveExploration(prefs: any) {
-    void request("saveExploration", { view: prefs })
-      .then(() => {
+    return request("saveExploration", {
+      view: prefs,
+      viewId: explorationViewId,
+    })
+      .then((result) => {
         viewSaveWarning = false;
+        return result?.saved === true;
       })
       .catch(() => {
         if (active && !viewSaveWarning) {
@@ -147,16 +153,18 @@ export function mountFinOps(root: HTMLElement) {
             ),
           );
         }
+        return false;
       });
   }
-  function rememberView() {
-    if (!scope) return;
+  function rememberView(immediate = false, nextPage = page) {
+    if (!scope || (win.__afFinOpsCleanup && win.__afFinOpsCleanup !== cleanup))
+      return;
     const prefs = {
       version: 1,
       mode: settings.mode,
       cli: settings.cli,
       processScope: settings.processScope,
-      page,
+      page: nextPage,
       scope,
       filters,
       columns,
@@ -172,11 +180,14 @@ export function mountFinOps(root: HTMLElement) {
       scroll: (document.scrollingElement ?? document.documentElement).scrollTop,
       tableScroll: $("af-resource-table")?.scrollTop ?? 0,
     };
-    win.__afFinOpsView = structuredClone(prefs);
+    const captured = structuredClone(prefs);
+    win.__afFinOpsView = captured;
     if (viewSaveTimer !== undefined) window.clearTimeout(viewSaveTimer);
+    viewSaveTimer = undefined;
+    if (immediate) return saveExploration(captured);
     viewSaveTimer = window.setTimeout(() => {
       viewSaveTimer = undefined;
-      saveExploration(prefs);
+      void saveExploration(captured);
     }, 300);
   }
   function rememberedView(saved: any): any {
@@ -767,14 +778,31 @@ export function mountFinOps(root: HTMLElement) {
     $<HTMLButtonElement>("af-review").disabled =
       executing || !settings.plan.some((a) => a.mode === settings.mode);
   }
-  function navigate(next: string) {
-    page = next;
+  async function selectPage(next: string) {
+    const sequence = ++navigationSequence;
+    // Commit before showing the page so a full iframe replacement cannot lose a visible selection.
+    const saved = await rememberView(true, next);
+    if (!active || !root.isConnected || sequence !== navigationSequence) return;
+    navigate(next);
+    if (saved === false)
+      report(
+        new Error(
+          "Page opened, but FDO could not preserve it for the next view reload.",
+        ),
+      );
+  }
+  function syncNavigation() {
     for (const b of root.querySelectorAll<HTMLElement>("[data-page]"))
       b.setAttribute(
         "aria-current",
         b.dataset.page === page ? "page" : "false",
       );
     $("af-title").textContent = navNames[page];
+  }
+  function navigate(next: string) {
+    const changed = page !== next;
+    page = next;
+    syncNavigation();
     if (page === "settings") {
       disposeCharts();
       renderSettings();
@@ -790,6 +818,7 @@ export function mountFinOps(root: HTMLElement) {
           "af-empty",
         ),
       );
+    if (changed) void rememberView(true);
   }
   function table(headers: string[], rows: (string | HTMLElement)[][]) {
     const wrap = el("div", "", "af-table-wrap"),
@@ -1854,7 +1883,7 @@ export function mountFinOps(root: HTMLElement) {
       extra.append(el("small", `${key}: ${value}`));
     host.append(
       extra,
-      button("Why did spending increase? →", () => navigate("changes")),
+      button("Why did spending increase? →", () => selectPage("changes")),
     );
   }
   function renderGroups() {
@@ -3239,7 +3268,7 @@ export function mountFinOps(root: HTMLElement) {
     const nav = (event.target as HTMLElement).closest<HTMLElement>(
       "[data-page]",
     );
-    if (nav) navigate(nav.dataset.page!);
+    if (nav) void selectPage(nav.dataset.page!).catch(report);
   });
   listen($("af-refresh"), "click", async () => {
     try {
@@ -3443,7 +3472,14 @@ export function mountFinOps(root: HTMLElement) {
     try {
       const boot = await request("bootstrap");
       settings = boot.settings;
+      explorationViewId = boot.viewId;
       operations = settings.operations;
+      if (
+        navigationSequence === 0 &&
+        Object.hasOwn(navNames, boot.exploration?.page)
+      )
+        page = boot.exploration.page;
+      syncNavigation();
       $("af-mode-badge").textContent = settings.mode.toUpperCase();
       connection();
       accounts = await run("accounts");
@@ -3463,11 +3499,19 @@ export function mountFinOps(root: HTMLElement) {
         basis: "ActualCost",
         ...scopeDates("30"),
       };
-      const remembered = rememberedView(boot.exploration);
+      const latestView = await request("getExploration", {
+        viewId: explorationViewId,
+      });
+      if (!active || !latestView.current) return;
+      const remembered = rememberedView(latestView.exploration);
       const restore = viewMatches(remembered);
       if (restore) {
         scope = structuredClone(remembered.scope);
-        if (navNames[remembered.page]) page = remembered.page;
+        if (
+          navigationSequence === 0 &&
+          Object.hasOwn(navNames, remembered.page)
+        )
+          page = remembered.page;
         for (const key of Object.keys(filters))
           if (typeof remembered.filters?.[key] === "string")
             filters[key] = remembered.filters[key];
@@ -3564,11 +3608,13 @@ export function mountFinOps(root: HTMLElement) {
   })();
   const cleanup = () => {
     if (!active) return;
-    rememberView();
+    const ownsWindow =
+      !win.__afFinOpsCleanup || win.__afFinOpsCleanup === cleanup;
+    if (ownsWindow) rememberView();
     if (viewSaveTimer !== undefined) {
       window.clearTimeout(viewSaveTimer);
       viewSaveTimer = undefined;
-      saveExploration(win.__afFinOpsView);
+      if (ownsWindow) void saveExploration(win.__afFinOpsView);
     }
     active = false;
     delete (root as any).__afCleanup;

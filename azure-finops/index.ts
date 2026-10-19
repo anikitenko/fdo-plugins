@@ -31,6 +31,7 @@ export default class AzureFinOpsPlugin extends FDO_SDK {
       "configure",
       "saveView",
       "saveExploration",
+      "getExploration",
       "addAction",
       "removeAction",
       "start",

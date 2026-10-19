@@ -53,7 +53,7 @@ process.parentPort.postMessage = () => {};
     const errors = [];
     let privileged = 0;
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.exposeFunction("__bridge", async (type, payload) => {
+    const bridge = async (type, payload) => {
       if (type !== "UI_MESSAGE") {
         privileged++;
         throw new Error("Demo requested a privileged action");
@@ -64,7 +64,8 @@ process.parentPort.postMessage = () => {};
           payload.content,
         ),
       };
-    });
+    };
+    await page.exposeFunction("__bridge", bridge);
     await page.setContent(
       '<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0">' +
         render +
@@ -219,7 +220,10 @@ process.parentPort.postMessage = () => {};
     );
     assert.equal(
       await page
-        .getByRole("searchbox", { name: "Search service inventory", exact: true })
+        .getByRole("searchbox", {
+          name: "Search service inventory",
+          exact: true,
+        })
         .inputValue(),
       "reporting-sql",
     );
@@ -275,6 +279,47 @@ process.parentPort.postMessage = () => {};
       true,
       "mobile page should contain horizontal table overflow",
     );
+    await page.locator('[data-page="changes"]').click();
+    await page
+      .getByRole("heading", { name: "Why did spending increase?", exact: true })
+      .waitFor();
+    await page.close();
+    const fresh = await browser.newPage({
+      viewport: { width: 1440, height: 1000 },
+    });
+    fresh.on("pageerror", (e) => errors.push(e.message));
+    await fresh.exposeFunction("__bridge", bridge);
+    await fresh.setContent(
+      '<!doctype html><html><body style="margin:0">' +
+        render +
+        "</body></html>",
+    );
+    await fresh.addScriptTag({ path: chartPath });
+    await fresh.evaluate((source) => {
+      window.createBackendReq = window.__bridge;
+      window.eval(source);
+    }, onLoad);
+    await fresh
+      .getByRole("heading", { name: "Why did spending increase?", exact: true })
+      .waitFor();
+    assert.equal(
+      await fresh.locator("#af-title").textContent(),
+      "Cost changes",
+    );
+    assert.equal(
+      await fresh.locator('[data-page="changes"]').getAttribute("aria-current"),
+      "page",
+    );
+    await fresh.locator("#af-refresh").click();
+    await fresh.waitForFunction(
+      () => !document.getElementById("af-refresh").disabled,
+    );
+    assert.equal(
+      await fresh.locator("#af-title").textContent(),
+      "Cost changes",
+    );
+    assert.equal(privileged, 0);
+    assert.deepEqual(errors, []);
     console.log(
       "Browser smoke passed: real SDK storage, all-demo request isolation, real host FDOCharts, responsive layout, no browser errors. Screenshots in /private/tmp/azure-finops-*.png",
     );

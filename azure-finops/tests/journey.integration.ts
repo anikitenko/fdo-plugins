@@ -5,9 +5,8 @@ import { render, onLoad } from "../render.ts";
 import { createBackend } from "../backend.ts";
 import { SUB, OTHER_SUB } from "../providers/demo.ts";
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
-async function fixture() {
-  const disk = new Map<string, any>(),
-    hostRequests: any[] = [];
+async function fixture(disk = new Map<string, any>()) {
+  const hostRequests: any[] = [];
   const store = {
     get: (k: string) => disk.get(k),
     set: (k: string, v: any) => disk.set(k, structuredClone(v)),
@@ -75,7 +74,7 @@ async function fixture() {
     $(selector).dispatchEvent(new win.Event(event, { bubbles: true }));
     await new Promise((r) => setTimeout(r, 10));
   };
-  await wait(() => $("#af-resource-table tbody tr"));
+  await wait(() => $("#af-main table") && $("#af-progress").hidden);
   return {
     backend,
     disk,
@@ -602,6 +601,71 @@ test("typing and focus survive a snapshot completing during service exploration"
     assert.equal(updated.value, "reporting-sql");
     assert.equal(f.win.document.activeElement, updated);
     assert.equal(updated.selectionStart, 4);
+  } finally {
+    release?.();
+    f.cleanup();
+  }
+});
+
+test("Cost changes navigation survives a fresh iframe and backend before the debounce interval", async () => {
+  const first = await fixture();
+  let second: Awaited<ReturnType<typeof fixture>> | undefined;
+  let closed = false;
+  try {
+    await first.click('[data-page="changes"]');
+    await first.wait(() => first.$("#af-title").textContent === "Cost changes");
+    // No pagehide cleanup or shared window memory: emulate abrupt host iframe replacement.
+    first.win.close();
+    closed = true;
+    second = await fixture(first.disk);
+    assert.equal(second.$("#af-title").textContent, "Cost changes");
+    assert.equal(
+      second.$('[data-page="changes"]').getAttribute("aria-current"),
+      "page",
+    );
+    assert.match(second.$("#af-main").textContent, /Why did spending increase/);
+    await second.click("#af-refresh");
+    await second.wait(() => !second!.$("#af-refresh").disabled);
+    assert.equal(second.$("#af-title").textContent, "Cost changes");
+  } finally {
+    if (!closed) first.cleanup();
+    second?.cleanup();
+  }
+});
+test("Cost changes selected during slow account discovery wins over an older saved Resources page", async () => {
+  const f = await fixture();
+  let release!: () => void;
+  try {
+    await f.wait(() => f.disk.get("exploration")?.page === "resources");
+    f.win.__afFinOpsCleanup();
+    delete f.win.__afFinOpsView;
+    const original = f.win.createBackendReq;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let waiting = false;
+    f.win.createBackendReq = async (type: string, payload: any) => {
+      const result = await original(type, payload);
+      if (
+        payload.handler === "azure-finops.poll" &&
+        Array.isArray(result?.data?.result) &&
+        result.data.result[0]?.user
+      ) {
+        waiting = true;
+        await held;
+      }
+      return result;
+    };
+    f.win.document.body.innerHTML = render();
+    f.win.eval(onLoad());
+    await f.wait(() => waiting);
+    await f.click('[data-page="changes"]');
+    assert.equal(f.$("#af-title").textContent, "Cost changes");
+    release();
+    await f.wait(() =>
+      f.$("#af-main").textContent.includes("Why did spending increase?"),
+    );
+    assert.equal(f.$("#af-title").textContent, "Cost changes");
   } finally {
     release?.();
     f.cleanup();

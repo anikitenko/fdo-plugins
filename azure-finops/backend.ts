@@ -57,6 +57,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
     reviews = new Map<string, Review>();
   let executing = false;
   let durableExplorationJSON: string | undefined;
+  let explorationViewId = "";
   const billing = new CostReadCoordinator();
   function load() {
     if (loaded) return;
@@ -90,21 +91,31 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
   function persist() {
     return persistValue("settings", settings);
   }
-  async function persistValue(key: string, value: unknown) {
+  async function persistValue(
+    key: string,
+    value: unknown,
+    ownsView = () => true,
+  ) {
     const snapshot = structuredClone(value);
     const next = persistTail.then(async () => {
+      if (!ownsView()) return false;
       const encoded =
         key === "exploration" ? JSON.stringify(snapshot) : undefined;
-      if (key === "exploration" && encoded === durableExplorationJSON) return;
+      if (key === "exploration" && encoded === durableExplorationJSON)
+        return true;
       const store = getStore();
       if (!store.flush)
         throw new Error("Durable storage flush is unavailable.");
       store.set(key, snapshot);
       await store.flush();
       if (key === "exploration") durableExplorationJSON = encoded;
+      return true;
     });
-    persistTail = next.catch(() => {});
-    await next;
+    persistTail = next.then(
+      () => {},
+      () => {},
+    );
+    return await next;
   }
   const modeOf = (input: any): Mode => {
     if (!["demo", "live"].includes(input?.mode))
@@ -364,31 +375,50 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       if (r.expires < Date.now()) reviews.delete(id);
   }, 1000);
   timer.unref?.();
+  function readExploration() {
+    const saved = getStore().get("exploration");
+    if (saved) {
+      try {
+        return normalizeExploration(saved, settings);
+      } catch {
+        /* Old provider preferences are optional. */
+      }
+    }
+    return undefined;
+  }
   return {
     async bootstrap() {
       load();
-      const saved = getStore().get("exploration");
-      let exploration;
-      if (saved) {
-        try {
-          exploration = normalizeExploration(saved, settings);
-        } catch {
-          /* Optional preferences from an old configuration are discarded. */
-        }
-      }
+      const viewId = crypto.randomUUID();
+      explorationViewId = viewId;
+      // Drain writes from the previous view before taking the restoration snapshot.
+      await persistTail;
       return {
         settings,
-        exploration,
+        viewId,
+        exploration: readExploration(),
         storage: "Durable JSON storage ready",
         hostNote:
           "Custom process scope required for the full Azure read/manage journey. Sign in manually; tokens never enter plugin storage.",
       };
     },
+    async getExploration(input: any) {
+      load();
+      await persistTail;
+      if (input?.viewId !== explorationViewId) return { current: false };
+      return { current: true, exploration: readExploration() };
+    },
     async saveExploration(input: any) {
       load();
+      if (input?.viewId !== explorationViewId)
+        return { saved: false, stale: true };
       const exploration = normalizeExploration(input?.view, settings);
-      await persistValue("exploration", exploration);
-      return { saved: true };
+      const saved = await persistValue(
+        "exploration",
+        exploration,
+        () => input.viewId === explorationViewId,
+      );
+      return { saved, stale: !saved };
     },
     async configure(input: any) {
       load();

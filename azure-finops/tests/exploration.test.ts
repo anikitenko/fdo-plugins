@@ -57,8 +57,8 @@ function fixture() {
 test("exploration persists only projected preferences and skips unchanged writes across reloads", async () => {
   const f = fixture(),
     b = f.backend();
-  await b.bootstrap();
-  await b.saveExploration({ view: preferences() });
+  const { viewId } = await b.bootstrap();
+  await b.saveExploration({ view: preferences(), viewId });
   const stored = f.disk.get("exploration");
   assert.equal(stored.serviceId, target);
   assert.equal(stored.assetViews[target].query, "reporting");
@@ -67,20 +67,29 @@ test("exploration persists only projected preferences and skips unchanged writes
     /PRIVATE|snapshot|serviceData|confirmations|token/,
   );
   assert.equal(f.flushes(), 1);
-  await b.saveExploration({ view: preferences() });
+  await b.saveExploration({ view: preferences(), viewId });
   assert.equal(
     f.flushes(),
     1,
     "An unchanged UI remount must not create a storage/refresh loop",
   );
   const reloaded = f.backend();
-  assert.deepEqual((await reloaded.bootstrap()).exploration, stored);
-  await reloaded.saveExploration({ view: preferences() });
+  const restored = await reloaded.bootstrap();
+  assert.deepEqual(restored.exploration, stored);
+  await reloaded.saveExploration({
+    view: preferences(),
+    viewId: restored.viewId,
+  });
   assert.equal(f.flushes(), 1);
   await reloaded.configure({ ...defaultSettings(), cli: "/usr/local/bin/az" });
-  assert.equal((await reloaded.bootstrap()).exploration, undefined);
+  const configured = await reloaded.bootstrap();
+  assert.equal(configured.exploration, undefined);
   await assert.rejects(
-    () => reloaded.saveExploration({ view: preferences() }),
+    () =>
+      reloaded.saveExploration({
+        view: preferences(),
+        viewId: configured.viewId,
+      }),
     /different provider configuration/,
   );
 });
@@ -130,17 +139,74 @@ test("exploration validates scope and bounds nested metadata", () => {
 test("preference save acknowledgement awaits durable flush and a failed save can be retried", async () => {
   const f = fixture(),
     b = f.backend();
-  await b.bootstrap();
+  const { viewId } = await b.bootstrap();
   f.fail(true);
   await assert.rejects(
-    () => b.saveExploration({ view: preferences() }),
+    () => b.saveExploration({ view: preferences(), viewId }),
     /flush failed/,
   );
   f.fail(false);
-  await b.saveExploration({ view: preferences() });
+  await b.saveExploration({ view: preferences(), viewId });
   assert.equal(
     f.flushes(),
     2,
     "A failed flush cannot populate the unchanged-write cache",
   );
+});
+
+test("an older iframe cannot overwrite the current page after a new view takes ownership", async () => {
+  const f = fixture(),
+    b = f.backend();
+  const old = await b.bootstrap();
+  await b.saveExploration({
+    viewId: old.viewId,
+    view: { ...preferences(), page: "resources" },
+  });
+  const current = await b.bootstrap();
+  await b.saveExploration({
+    viewId: current.viewId,
+    view: { ...preferences(), page: "changes" },
+  });
+  const late = await b.saveExploration({
+    viewId: old.viewId,
+    view: { ...preferences(), page: "resources" },
+  });
+  assert.deepEqual(late, { saved: false, stale: true });
+  assert.equal(
+    (await b.getExploration({ viewId: current.viewId })).exploration?.page,
+    "changes",
+  );
+  assert.equal((await b.getExploration({ viewId: old.viewId })).current, false);
+  assert.equal(f.disk.get("exploration").page, "changes");
+});
+test("startup drains pending writes and drops a queued save from the replaced iframe", async () => {
+  const disk = new Map<string, any>();
+  let release!: () => void;
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  const b = createBackend(
+    () =>
+      ({
+        get: (k: string) => disk.get(k),
+        set: (k: string, v: unknown) => disk.set(k, structuredClone(v)),
+        flush: () => held,
+      }) as any,
+  );
+  const old = await b.bootstrap();
+  const first = b.saveExploration({
+    viewId: old.viewId,
+    view: { ...preferences(), page: "changes" },
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  const queued = b.saveExploration({
+    viewId: old.viewId,
+    view: { ...preferences(), page: "resources" },
+  });
+  const opening = b.bootstrap();
+  release();
+  await first;
+  assert.deepEqual(await queued, { saved: false, stale: true });
+  assert.equal((await opening).exploration?.page, "changes");
+  assert.equal(disk.get("exploration").page, "changes");
 });
