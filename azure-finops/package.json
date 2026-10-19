@@ -1,0 +1,30 @@
+{
+  "name": "fdo-azure-finops",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Azure FinOps & Resource Manager — CLI-only demo and live providers",
+  "source": "index.ts",
+  "main": "dist/index.cjs",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/tooling.mjs build",
+    "test": "node scripts/tooling.mjs test",
+    "test:dom": "node scripts/tooling.mjs dom",
+    "test:deployment": "node scripts/tooling.mjs deployment",
+    "test:browser": "node scripts/browser-smoke.cjs",
+    "verify": "npm run typecheck && npm test && npm run test:dom && npm run build && npm run test:deployment"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@anikitenko/fdo-sdk": "^1.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^27.4.0",
+    "typescript": "^5.9.3"
+  }
+}

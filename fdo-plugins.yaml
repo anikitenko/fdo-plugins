@@ -19,3 +19,7 @@ spec:
       repository: https://github.com/anikitenko/fdo-plugins
       targetRevision: main
       path: /remote-commands
+    - name: azure-finops
+      repository: https://github.com/anikitenko/fdo-plugins
+      targetRevision: main
+      path: /azure-finops
