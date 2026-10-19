@@ -202,6 +202,8 @@ export function mountFinOps(root: HTMLElement) {
           operations = poll.operations;
           if (page === "operations") renderOperations();
         }
+        if (poll.progress && !poll.request)
+          $("af-progress-detail").textContent = poll.progress;
         if (poll.state === "error") throw new Error(poll.error);
         if (poll.state === "done") return poll.result;
         if (poll.request) {
@@ -535,7 +537,7 @@ export function mountFinOps(root: HTMLElement) {
     $("af-context").textContent =
       `${accounts.find((a) => a.id === scope.subscriptionId)?.name ?? scope.subscriptionId} · ${scope.groupIds.length ? `${scope.groupIds.length} resource groups` : "All accessible groups"} · ${scope.from.slice(0, 10)} → ${scope.to.slice(0, 10)} UTC · ${scope.basis}`;
     $("af-freshness").textContent =
-      `Updated ${new Date(snapshot.fetchedAt).toLocaleString()}${Date.now() - Date.parse(snapshot.fetchedAt) > 300000 ? " · STALE" : ""}`;
+      `Updated ${new Date(snapshot.fetchedAt).toLocaleString()}${Date.now() - Date.parse(snapshot.fetchedAt) > 300000 ? " · STALE" : ""}${snapshot.coverage.billingFreshness ? " · " + snapshot.coverage.billingFreshness : ""}`;
     message(snapshot.warnings.join(" "));
     if (page === "resources") renderResources();
     else if (page === "overview") renderOverview();
@@ -947,20 +949,21 @@ export function mountFinOps(root: HTMLElement) {
         )
           return false;
       }
-      return !((filters.preset === "recent" && (a === null || a > 30)) ||
-          (filters.preset === "high" && !c.some((v) => v.amount >= 100)) ||
-          (filters.preset === "owner" && r.tags.owner) ||
-          (filters.preset === "disk" &&
-              !(
-                  r.type.toLowerCase() === "microsoft.compute/disks" &&
-                  r.attached === false
-              )) ||
-          (filters.preset === "ip" &&
-              !(
-                  r.type.toLowerCase() === "microsoft.network/publicipaddresses" &&
-                  r.attached === false
-              )));
-
+      return !(
+        (filters.preset === "recent" && (a === null || a > 30)) ||
+        (filters.preset === "high" && !c.some((v) => v.amount >= 100)) ||
+        (filters.preset === "owner" && r.tags.owner) ||
+        (filters.preset === "disk" &&
+          !(
+            r.type.toLowerCase() === "microsoft.compute/disks" &&
+            r.attached === false
+          )) ||
+        (filters.preset === "ip" &&
+          !(
+            r.type.toLowerCase() === "microsoft.network/publicipaddresses" &&
+            r.attached === false
+          ))
+      );
     });
   }
   function rowData(r: Resource) {

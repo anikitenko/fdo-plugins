@@ -1,3 +1,4 @@
+import { fastBilling } from "./billing-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LiveProvider, resourceFromAzure } from "../providers/live.ts";
@@ -70,7 +71,7 @@ test("Resource Graph pagination, exact group filtering and partial cost denial r
       };
     }
     throw new Error("Fixture permission denied");
-  });
+  }, fastBilling());
   const data = await provider.snapshot({
     ...scope,
     groupIds: [`/subscriptions/${SUB}/resourcegroups/rg-dev`],

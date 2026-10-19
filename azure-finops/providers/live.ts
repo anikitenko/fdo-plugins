@@ -13,6 +13,11 @@ import type {
   Operation,
 } from "../types.ts";
 import { inspectService } from "./services.ts";
+import {
+  CostReadCoordinator,
+  isBillingThrottle,
+  type ReadContext,
+} from "./cost-policy.ts";
 import { actionArgs } from "../actions.ts";
 import { DAY, normalizeId, previousPeriod } from "../domain.ts";
 import {
@@ -173,7 +178,26 @@ export function resourceFromAzure(
 }
 export class LiveProvider implements Provider {
   private subscriptionId = "";
-  constructor(private cli: Cli) {}
+  private partition = "";
+  private cachePrefix = "";
+  private readonly unresolvedIdentity = crypto.randomUUID();
+  private cacheHits = 0;
+  private billingTimes: number[] = [];
+  constructor(
+    private cli: Cli,
+    private billing = new CostReadCoordinator(),
+    private readContext: ReadContext & { namespace?: string } = {},
+  ) {}
+  private async cached<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const result = await this.billing.cached(
+      this.cachePrefix + "|" + key,
+      work,
+      this.readContext,
+    );
+    this.billingTimes.push(result.at);
+    if (result.cached) this.cacheHits++;
+    return result.value;
+  }
   async accounts(): Promise<Account[]> {
     // account show detects missing CLI or missing manual sign-in; never run login or token commands.
     await this.cli(
@@ -206,6 +230,13 @@ export class LiveProvider implements Provider {
         "CLI tenant/subscription context changed. Sign in manually and review the scope again.",
       );
     this.subscriptionId = scope.subscriptionId;
+    this.partition = JSON.stringify([
+      this.readContext.namespace ?? "",
+      normalizeId(scope.tenantId),
+      a.user?.name ?? this.unresolvedIdentity,
+      a.user?.type ?? "Unknown",
+    ]);
+    this.cachePrefix = this.partition + "|" + normalizeId(scope.subscriptionId);
   }
   async groups(scope: Scope): Promise<Group[]> {
     await this.account(scope);
@@ -252,20 +283,30 @@ export class LiveProvider implements Provider {
       normalizeId(requestedSubscription) !== normalizeId(this.subscriptionId)
     )
       throw new Error("Rejected a cross-subscription pagination URL.");
-    return this.cli(
-      [
-        "rest",
-        "--method",
-        method,
-        "--url",
-        url,
-        "--subscription",
-        this.subscriptionId,
-        ...(body ? ["--body", JSON.stringify(body)] : []),
-        ...(query ? ["--query", query] : []),
-      ],
-      `Azure ${method.toUpperCase()} ${parsed.pathname}`,
-    );
+    const billingRead =
+      method.toLowerCase() === "post" &&
+      /\/providers\/microsoft\.costmanagement\/(query|forecast)$/i.test(
+        parsed.pathname,
+      );
+    const work = () =>
+      this.cli(
+        [
+          "rest",
+          "--method",
+          method,
+          "--url",
+          url,
+          "--subscription",
+          this.subscriptionId,
+          ...(body ? ["--body", JSON.stringify(body)] : []),
+          ...(query ? ["--query", query] : []),
+          ...(billingRead ? ["--headers", "ClientType=FDOAzureFinOps"] : []),
+        ],
+        `Azure ${method.toUpperCase()} ${parsed.pathname}`,
+      );
+    return billingRead
+      ? this.billing.request(this.partition, work, this.readContext)
+      : work();
   }
   private async list(url: string, query?: string) {
     const values: any[] = [];
@@ -322,7 +363,16 @@ export class LiveProvider implements Provider {
       )
       .map((r) => resourceFromAzure(r, scope, new Date().toISOString()));
   }
-  private async costRows(
+  private costRows(scope: Scope, groupings = ["ResourceId", "ServiceName"]) {
+    const key = JSON.stringify({
+      scope: { ...scope, groupIds: [...scope.groupIds].sort() },
+      groupings,
+    });
+    return this.cached("cost:" + key, () =>
+      this.fetchCostRows(scope, groupings),
+    );
+  }
+  private async fetchCostRows(
     scope: Scope,
     groupings = ["ResourceId", "ServiceName"],
   ) {
@@ -402,6 +452,8 @@ export class LiveProvider implements Provider {
   }
   async snapshot(scope: Scope): Promise<Snapshot> {
     await this.account(scope);
+    this.cacheHits = 0;
+    this.billingTimes = [];
     const now = new Date().toISOString();
     const snapshot: Snapshot = {
       scope,
@@ -419,11 +471,19 @@ export class LiveProvider implements Provider {
       coverage: {},
       breakdowns: {},
     };
+    const billingFailures = new Set<string>();
+    let billingRetryAt = 0;
     const attempt = async (key: string, work: () => Promise<void>) => {
       try {
         await work();
         snapshot.coverage[key] = "Available";
       } catch (e) {
+        if (isBillingThrottle(e)) {
+          snapshot.coverage[key] = "Throttled / deferred";
+          billingFailures.add(key);
+          billingRetryAt = Math.max(billingRetryAt, e.retryAt ?? 0);
+          return;
+        }
         snapshot.coverage[key] = "Unavailable / partial";
         snapshot.warnings.push(
           `${key}: ${e instanceof Error ? e.message : "Unavailable"}`,
@@ -446,11 +506,28 @@ export class LiveProvider implements Provider {
       snapshot.mtd = await this.costs({
         ...scope,
         from: now.slice(0, 7) + "-01T00:00:00.000Z",
-        to: now,
+        to: now.slice(0, 10) + "T23:59:59.999Z",
       });
     });
+    snapshot.coverage.serviceBreakdown = snapshot.coverage.costs;
+    if (snapshot.coverage.costs === "Available") {
+      const totals = new Map<
+        string,
+        { name: string; amount: number; currency: string }
+      >();
+      for (const c of snapshot.costs) {
+        const key = c.currency + "|" + c.service,
+          row = totals.get(key) ?? {
+            name: c.service,
+            amount: 0,
+            currency: c.currency,
+          };
+        row.amount += c.amount;
+        totals.set(key, row);
+      }
+      snapshot.breakdowns!.service = [...totals.values()];
+    }
     for (const [key, dimension] of [
-      ["service", "ServiceName"],
       ["region", "ResourceLocation"],
       ["owner", "owner"],
     ])
@@ -556,9 +633,33 @@ export class LiveProvider implements Provider {
         } as Finding);
       }
     });
+    if (billingFailures.size) {
+      const wait =
+        billingRetryAt > Date.now()
+          ? ` Retry in at least ${Math.ceil((billingRetryAt - Date.now()) / 1000)} seconds.`
+          : " Retry later.";
+      snapshot.warnings.push(
+        `Azure Cost Management throttled billing reads after bounded retries; deferred ${[...billingFailures].join(", ")}.${wait} Inventory is shown where permitted; missing cost data is unknown, not zero. Refresh does not bypass the shared cooldown.`,
+      );
+    }
+    if (this.billingTimes.length)
+      snapshot.coverage.billingFreshness = `Billing data oldest fetch ${new Date(Math.min(...this.billingTimes)).toISOString()}; ${this.cacheHits} query result(s) reused from the 10-minute in-memory cache. Inventory freshness is separate.`;
     return snapshot;
   }
-  private async forecast(
+  private forecast(scope: Scope, now: string): Promise<Snapshot["forecast"]> {
+    return this.cached(
+      "forecast:" +
+        JSON.stringify({
+          tenant: scope.tenantId,
+          subscription: scope.subscriptionId,
+          groups: [...scope.groupIds].sort(),
+          basis: scope.basis,
+          day: now.slice(0, 10),
+        }),
+      () => this.fetchForecast(scope, now),
+    );
+  }
+  private async fetchForecast(
     scope: Scope,
     now: string,
   ): Promise<Snapshot["forecast"]> {
@@ -576,61 +677,66 @@ export class LiveProvider implements Provider {
     if (Date.parse(from) > Date.parse(to))
       throw new Error("No remaining complete days this month to forecast");
     const totals = new Map<string, number>();
-    for (const scopeId of scope.groupIds.length
-      ? scope.groupIds
-      : [`/subscriptions/${scope.subscriptionId}`]) {
-      let url = `https://management.azure.com${scopeId}/providers/Microsoft.CostManagement/forecast?api-version=2025-03-01`;
-      const seen = new Set<string>();
-      const body = {
-        type: scope.basis,
-        timeframe: "Custom",
-        timePeriod: { from, to },
-        includeActualCost: false,
-        includeFreshPartialCost: false,
-        dataset: {
-          granularity: "Daily",
-          aggregation: { cost: { name: "PreTaxCost", function: "Sum" } },
-        },
-      };
-      while (url) {
-        if (seen.has(url) || seen.size >= 100)
-          throw new Error("Forecast pagination incomplete");
-        seen.add(url);
-        const p = (await this.rest(url, "post", body))?.properties;
+    let url = `https://management.azure.com/subscriptions/${scope.subscriptionId}/providers/Microsoft.CostManagement/forecast?api-version=2025-03-01`;
+    const seen = new Set<string>();
+    const body = {
+      type: scope.basis,
+      timeframe: "Custom",
+      timePeriod: { from, to },
+      includeActualCost: false,
+      includeFreshPartialCost: false,
+      dataset: {
+        granularity: "Daily",
+        aggregation: { cost: { name: "PreTaxCost", function: "Sum" } },
+        ...(scope.groupIds.length
+          ? {
+              filter: {
+                dimensions: {
+                  name: "ResourceGroup",
+                  operator: "In",
+                  values: scope.groupIds.map((id) => id.split("/").at(-1)),
+                },
+              },
+            }
+          : {}),
+      },
+    };
+    while (url) {
+      if (seen.has(url) || seen.size >= 100)
+        throw new Error("Forecast pagination incomplete");
+      seen.add(url);
+      const p = (await this.rest(url, "post", body))?.properties;
+      if (
+        !Array.isArray(p?.rows) ||
+        !Array.isArray(p?.columns) ||
+        !p.rows.length
+      )
+        throw new Error("Azure has no forecast data for this selected scope");
+      for (const values of p.rows) {
+        const row = Object.fromEntries(
+          p.columns.map((c: any, i: number) => [c.name, values[i]]),
+        );
         if (
-          !Array.isArray(p?.rows) ||
-          !Array.isArray(p?.columns) ||
-          !p.rows.length
+          row.CostStatus &&
+          String(row.CostStatus).toLowerCase() !== "forecast"
         )
-          throw new Error(
-            "Azure has no forecast data for every selected scope",
-          );
-        for (const values of p.rows) {
-          const row = Object.fromEntries(
-            p.columns.map((c: any, i: number) => [c.name, values[i]]),
-          );
-          if (
-            row.CostStatus &&
-            String(row.CostStatus).toLowerCase() !== "forecast"
-          )
-            continue;
-          const amount = Number(row.PreTaxCost ?? row.Cost ?? row.cost);
-          if (
-            !Number.isFinite(amount) ||
-            typeof row.Currency !== "string" ||
-            !/^[A-Z]{3}$/.test(row.Currency)
-          )
-            throw new Error("Forecast amount or currency missing");
-          totals.set(row.Currency, (totals.get(row.Currency) ?? 0) + amount);
-        }
-        url = p.nextLink ?? "";
+          continue;
+        const amount = Number(row.PreTaxCost ?? row.Cost ?? row.cost);
+        if (
+          !Number.isFinite(amount) ||
+          typeof row.Currency !== "string" ||
+          !/^[A-Z]{3}$/.test(row.Currency)
+        )
+          throw new Error("Forecast amount or currency missing");
+        totals.set(row.Currency, (totals.get(row.Currency) ?? 0) + amount);
       }
+      url = p.nextLink ?? "";
     }
     if (!totals.size) throw new Error("No Azure forecast rows returned");
     return [...totals].map(([currency, amount]) => ({
       currency,
       amount,
-      basis: `Azure forecast • ${scope.basis} • remaining complete UTC days ${from.slice(0, 10)} → ${to.slice(0, 10)} • exact selected group scopes; future current-month exception to historical date selection • excludes actuals`,
+      basis: `Azure forecast • ${scope.basis} • remaining complete UTC days ${from.slice(0, 10)} → ${to.slice(0, 10)} • ${scope.groupIds.length ? "subscription scope filtered to exact selected group names" : "all accessible groups in the selected subscription"}; future current-month exception to historical date selection • excludes actuals`,
     }));
   }
   async scan(scope: Scope) {

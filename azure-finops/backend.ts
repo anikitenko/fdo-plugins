@@ -18,6 +18,7 @@ import {
   reviewAction,
   fingerprint,
 } from "./domain.ts";
+import { CostReadCoordinator, retryAfterMs } from "./providers/cost-policy.ts";
 import { DemoProvider } from "./providers/demo.ts";
 import { LiveProvider, type Cli } from "./providers/live.ts";
 type Job = {
@@ -36,6 +37,7 @@ type Job = {
     delivered: boolean;
   };
   operation?: Operation;
+  progress?: string;
 };
 export const defaultSettings = (): Settings => ({
   cli: "/opt/homebrew/bin/az",
@@ -53,6 +55,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
   const jobs = new Map<string, Job>(),
     reviews = new Map<string, Review>();
   let executing = false;
+  const billing = new CostReadCoordinator();
   function load() {
     if (loaded) return;
     const raw = getStore().get("settings") as Settings | undefined;
@@ -120,7 +123,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
           : auth
             ? "Azure CLI is not authenticated for this tenant. Run az login manually outside FDO, then Check connection."
             : throttled
-              ? "Azure throttled this request. Respect Retry-After in Azure diagnostics and retry this read later; no automatic command retry occurred."
+              ? "Azure throttled this request. Billing reads use a bounded retry/cooldown policy; resource mutations are never automatically retried."
               : code === "ACCESS_DENIED" ||
                   /scope|argument|allowlist|capability|denied/i.test(text)
                 ? `Host or Azure access denied (${code}). See Settings → Custom capability setup. The plugin did not bypass policy.`
@@ -128,6 +131,8 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       ),
       {
         code,
+        throttled,
+        retryAfterMs: throttled ? retryAfterMs(text) : undefined,
         notFound: /ResourceNotFound|ResourceGroupNotFound/i.test(text),
         uncertain: ["TIMEOUT", "CANCELLED", "IPC_FAILURE"].includes(code),
         definitiveRejection:
@@ -188,7 +193,15 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       });
   }
   const provider = (mode: Mode, job: Job): Provider =>
-    mode === "demo" ? new DemoProvider(settings) : new LiveProvider(cli(job));
+    mode === "demo"
+      ? new DemoProvider(settings)
+      : new LiveProvider(cli(job), billing, {
+          namespace: JSON.stringify([settings.cli, settings.processScope]),
+          active: () => job.state === "running",
+          progress: (message) => {
+            job.progress = message;
+          },
+        });
   function start(
     mode: Mode,
     work: (p: Provider, job: Job) => Promise<unknown>,
@@ -349,6 +362,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
         throw new Error(
           "Enter the host scope ID, without the capability prefix.",
         );
+      billing.clear();
       settings.cli = input.cli;
       settings.processScope = input.processScope;
       settings.mode = modeOf(input);
@@ -587,7 +601,9 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
                   op.state = "succeeded";
                   op.message =
                     "CLI completion and post-action state verified. Associated charges may remain.";
-                  settings.plan = settings.plan.filter((a) => a.id !== action.id);
+                  settings.plan = settings.plan.filter(
+                    (a) => a.id !== action.id,
+                  );
                 } else {
                   op.state = "unknown";
                   op.message =
@@ -629,6 +645,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
         result: job.result,
         error: job.error,
         operations: settings.operations,
+        progress: job.progress,
       };
       if (job.state !== "running") jobs.delete(job.id);
       return response;

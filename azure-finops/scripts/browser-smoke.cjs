@@ -100,6 +100,39 @@ process.parentPort.postMessage = () => {};
         .count()) > 0,
       true,
     );
+    // A short desktop viewport must keep every section reachable without scrolling the workspace.
+    await page.setViewportSize({ width: 1100, height: 560 });
+    await page.locator('[data-page="overview"]').focus();
+    const sidebarBounds = await page.locator(".af-sidebar").boundingBox();
+    assert.ok(sidebarBounds && sidebarBounds.height <= 560);
+    assert.equal(
+      await page
+        .locator(".af-sidebar nav")
+        .evaluate((nav) => nav.scrollHeight > nav.clientHeight),
+      true,
+    );
+    await page.locator('[data-page="settings"]').focus();
+    const navScroll = await page
+      .locator(".af-sidebar nav")
+      .evaluate((nav) => nav.scrollTop);
+    assert.ok(
+      navScroll > 0,
+      "keyboard focus reveals the final navigation item",
+    );
+    const settingsBounds = await page
+      .locator('[data-page="settings"]')
+      .boundingBox();
+    const footerBounds = await page.locator(".af-sidebar footer").boundingBox();
+    assert.ok(
+      settingsBounds &&
+        footerBounds &&
+        settingsBounds.y + settingsBounds.height <= footerBounds.y,
+    );
+    assert.ok(
+      footerBounds.y + footerBounds.height <= 560,
+      "connection status stays visible",
+    );
+    await page.screenshot({ path: "/private/tmp/azure-finops-sidebar.png" });
     await page.setViewportSize({ width: 740, height: 1000 });
     await page.locator('[data-page="resources"]').click();
     await page.screenshot({

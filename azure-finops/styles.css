@@ -142,6 +142,11 @@
   position: sticky;
   top: 0;
   height: 100vh;
+  min-height: 0;
+  overflow-y: auto;
+}
+.shell .af-sidebar > :not(nav) {
+  flex-shrink: 0;
 }
 .shell .af-brand {
   display: flex;
@@ -165,11 +170,18 @@
   color: transparent;
 }
 .shell nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .shell nav button {
+  flex-shrink: 0;
   display: flex;
   gap: 14px;
   align-items: center;
@@ -621,6 +633,8 @@
     padding: 14px;
   }
   .shell nav {
+    flex: none;
+    scrollbar-gutter: auto;
     flex-direction: row;
     overflow: auto;
   }

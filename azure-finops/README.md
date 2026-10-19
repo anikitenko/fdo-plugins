@@ -36,6 +36,7 @@ The plugin's REST requests use `az rest`, authenticated internally by the CLI, n
 
 **Subscription → groups → costs → resource origin → dependencies → proposed action → typed confirmation → Operations**.
 
+- The desktop navigation list scrolls independently when sections exceed the available height, keeping the title and connection status visible. Keyboard focus reveals off-screen sections; mobile navigation scrolls horizontally.
 - The persistent scope bar controls tenant, subscription, full-ID resource groups, date range, saved views and actual/amortized cost basis. Group selection has search, multi-select, clear, all-accessible, Apply, Cancel and Escape. Empty draft selection is not silently interpreted as All. Changing subscription refreshes available groups and clears invalid IDs.
 - Scope changes clear old results immediately. Request generations and detail selection IDs prevent a late response from appearing under another selection. An action retains its original tenant/subscription/resource ID even after navigation changes.
 - Named views persist scope, filters, columns and sort. Resource details preserve inventory filters and table scroll. Filters include type, region, age, state, ownership, environment, tags, costs, findings and locks. Extra filters and optional columns are expandable. CSV export uses only current-table fields and neutralizes spreadsheet formula prefixes.
@@ -90,11 +91,23 @@ The plan review shows exact identities, known references, discovery gaps, locks,
 
 The CLI waits for Azure's long-running operations; the provider verifies resulting state afterward. A timeout, lost response or unverifiable state becomes **unknown**, not success. Each resource retains its own outcome, exact target, identity when available, timestamps, host correlation IDs and sanitized error. Running/queued records load as unknown after restart. Partial failures retain failed proposals. Stopping local data loading is separate from cancelling Azure; there is no automatic mutation retry or general rollback.
 
-Projected action savings are intentionally not fabricated from generic finding estimates. In **Operations → Measure observed spending**, each verified operation can collect a persistent seven-day actual-cost comparison for its exact resource ID. It excludes the operation day, uses seven full UTC days before and after, and waits 48 additional hours for ingestion. Currencies stay separate; positive change means lower spending, negative change means increased spending. A window without returned target charges remains unknown rather than a fabricated zero. Related-resource charges and changes in commitments, credits or workloads are not attributed to the operation. Measurements for repeated actions can overlap and must not be summed as independent savings. Refreshing re-queries costs to capture subsequent adjustments. Local FDO storage is sufficient for this plugin; no shared audit service is required.
+Projected action savings are intentionally not fabricated from generic finding estimates. In **Operations → Measure observed spending**, each verified operation can collect a persistent seven-day actual-cost comparison for its exact resource ID. It excludes the operation day, uses seven full UTC days before and after, and waits 48 additional hours for ingestion. Currencies stay separate; positive change means lower spending, negative change means increased spending. A window without returned target charges remains unknown rather than a fabricated zero. Related-resource charges and changes in commitments, credits or workloads are not attributed to the operation. Measurements for repeated actions can overlap and must not be summed as independent savings. Refreshing reuses complete billing datasets for up to ten minutes, then re-queries costs to capture subsequent adjustments. Local FDO storage is sufficient for this plugin; no shared audit service is required.
+
+## Cost Management throttling
+
+Azure Cost Management has service-side quotas shared with other clients. A CLI-only integration is still subject to those quotas. A throttled costs request previously led to more requests for comparison, month-to-date, breakdowns and forecast, repeating the same error. These billing reads now share one serialized queue per configured CLI/scope, signed-in identity and tenant, including across subscriptions and Refresh jobs. Request starts are spaced at least **20 seconds** apart. This is conservative plugin pacing, not a claim about a universal Azure quota.
+
+Only Cost Management **query and forecast reads** receive bounded automatic retries. The plugin honors allowlisted `Retry-After` and Cost Management retry headers when Azure CLI includes them in its error output; it never enables debug/verbose output to obtain headers. With no exposed retry hint, the backoff is 60 seconds, then 120 seconds, plus small jitter. At most two retries may start within a 90-second scheduling budget per read; each CLI attempt retains its own 90-second timeout. A server delay beyond that budget or exhausted retries opens a shared cooldown. Remaining billing requests are deferred without invoking CLI. Refresh cannot bypass that cooldown. All billing requests use the same honest `ClientType=FDOAzureFinOps` header.
+
+The loading view shows pacing/retry countdowns and supports **Stop local loading**, which prevents further read attempts. Inventory and other permitted non-billing data remain available. One consolidated warning lists deferred sections instead of repeating the same throttle error. Missing billing values remain Unknown. **Resource mutations are never automatically retried.** Stopping local loading does not cancel an Azure resource operation.
+
+Complete downloaded billing datasets are reused for **up to ten minutes** in bounded, backend memory only, with identical in-flight queries deduplicated. Cache keys retain CLI configuration, identity, tenant, subscription, selected full group IDs, date range and cost basis; forecast uses its labelled future current-month range. Failed or incomplete downloads are not cached. Credentials, tokens and raw error output are never cached. Changing saved provider settings clears the cache. The header reports the oldest billing dataset fetch time and cache reuse separately from inventory freshness. Month-to-date queries include the current UTC day; Azure's returned daily costs can still lag ingestion and are not real-time spend.
+
+The service breakdown reuses the primary cost dataset, and selected forecast groups are batched, reducing redundant queries. After updating, rebuild or re-import the updated source in FDO and reload the plugin, then let its countdown finish before refreshing. The old wording “Respect Retry-After in Azure diagnostics … no automatic command retry occurred” identifies an earlier build/result; it is no longer emitted by this provider, including region/owner breakdowns and forecast. Other applications can consume the same Azure quotas, so pacing cannot guarantee that Azure will accept every request. No additional FDO capability or Azure write permission is required for this policy.
 
 ## Forecasts and anomaly investigation
 
-Live forecasts use the documented Cost Management Forecast API through `az rest` with the selected actual/amortized basis. They sum Azure-provided forecast rows for **remaining complete UTC days in the current month**, excluding actuals. This is explicitly labelled as a future current-month exception to the historical date picker. For selected groups each exact group scope is queried independently; failure of any group suppresses the aggregate rather than showing a partial total. Currencies stay separate. Missing forecasts, unsupported subscriptions or insufficient history produce coverage warnings, never a replacement extrapolation.
+Live forecasts use the documented Cost Management Forecast API through `az rest` with the selected actual/amortized basis. They sum Azure-provided forecast rows for **remaining complete UTC days in the current month**, excluding actuals. This is explicitly labelled as a future current-month exception to the historical date picker. Selected groups are batched into one subscription forecast query with a `ResourceGroup In` filter for their exact names; full tenant/subscription/group IDs remain the scope and cache keys. There is no fallback to a broader unfiltered total when that query fails. Currencies stay separate. Missing forecasts, unsupported subscriptions or insufficient history produce coverage warnings, never a replacement extrapolation.
 
 **Cost changes → Anomaly investigation** provides three distinct surfaces:
 
@@ -118,22 +131,22 @@ Resize currently supports **deallocated VMs**, with a separate completed dealloc
 
 ## Scaffold limits and coverage
 
-| Area              | Current behavior                                                                                                                                                 |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Inventory         | Resource Graph with skip-token pagination; explicit partial/error states and output truncation rejection                                                         |
-| Costs             | Cost Management queries, next-link pagination, selected-period/MTD/equivalent comparison, currency separation, separate service/region/owner queries             |
-| Budgets           | Returned subscription and selected-group budgets; actual budget scope shown, subscription totals labelled broader than group scope                               |
-| Forecast          | Azure remaining-month forecast, exact group scopes, actual/amortized basis and currency separation; partial aggregates suppressed                                |
-| Origin            | Independent metadata/history evidence, permission-aware creator display names; no creator/owner or first-observed/creation conflation                            |
-| Deployments       | Exact-target operations in 20 recent group deployments; projected Bicep compiler metadata and Graph client signatures; original tool/creation can remain Unknown |
-| Metrics           | Explicit scope-wide VM scan and detail CPU/free-memory/network signals, up to seven selected days, independent coverage; no automatic guest instrumentation      |
-| Dependencies      | Provider outbound, subscription inbound Graph, NIC expansion, Recovery Services references; explicit permissions and external/runtime discovery gaps             |
-| Advisor           | Cached returned cost recommendations; raw savings with ambiguous periods/currencies are not normalized into totals                                               |
-| VM resize         | Conservative deallocated, same-family adapter with hardware/placement/quota checks; special configurations blocked; capacity not guaranteed                      |
-| Azure anomalies   | Documented InsightAlert configuration, Azure Cost Analysis link, separate transparent statistical checks; no unsupported anomaly-record API                      |
-| Observed spending | Persistent per-operation 7-day actual-cost pre/post measurement after 48-hour ingestion lag; no causal attribution or fabricated missing-window zeros            |
-| Authentication    | Manual Azure CLI authentication only; public Azure ARM endpoint, existing CLI profile                                                                            |
-| Live validation   | Unit tests use recorded-shaped fixtures and mocked transport. No live tenant or destructive Azure operation was used during development                          |
+| Area              | Current behavior                                                                                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Inventory         | Resource Graph with skip-token pagination; explicit partial/error states and output truncation rejection                                                                           |
+| Costs             | Cost Management queries, next-link pagination, selected-period/MTD/equivalent comparison, currency separation, service breakdown from primary costs, separate region/owner queries |
+| Budgets           | Returned subscription and selected-group budgets; actual budget scope shown, subscription totals labelled broader than group scope                                                 |
+| Forecast          | Azure remaining-month forecast, one query filtering selected groups, actual/amortized basis and currency separation                                                                |
+| Origin            | Independent metadata/history evidence, permission-aware creator display names; no creator/owner or first-observed/creation conflation                                              |
+| Deployments       | Exact-target operations in 20 recent group deployments; projected Bicep compiler metadata and Graph client signatures; original tool/creation can remain Unknown                   |
+| Metrics           | Explicit scope-wide VM scan and detail CPU/free-memory/network signals, up to seven selected days, independent coverage; no automatic guest instrumentation                        |
+| Dependencies      | Provider outbound, subscription inbound Graph, NIC expansion, Recovery Services references; explicit permissions and external/runtime discovery gaps                               |
+| Advisor           | Cached returned cost recommendations; raw savings with ambiguous periods/currencies are not normalized into totals                                                                 |
+| VM resize         | Conservative deallocated, same-family adapter with hardware/placement/quota checks; special configurations blocked; capacity not guaranteed                                        |
+| Azure anomalies   | Documented InsightAlert configuration, Azure Cost Analysis link, separate transparent statistical checks; no unsupported anomaly-record API                                        |
+| Observed spending | Persistent per-operation 7-day actual-cost pre/post measurement after 48-hour ingestion lag; no causal attribution or fabricated missing-window zeros                              |
+| Authentication    | Manual Azure CLI authentication only; public Azure ARM endpoint, existing CLI profile                                                                                              |
+| Live validation   | Unit tests use recorded-shaped fixtures and mocked transport. No live tenant or destructive Azure operation was used during development                                            |
 
 The consistent demo clock is **19 October 2026, 12:00 UTC**. Illustrative resource ages derive from that clock; file freshness uses actual fetch time. Demo operations affect simulated resource state only, while historical fixture charges remain historical.
 
@@ -144,6 +157,7 @@ The consistent demo clock is **19 October 2026, 12:00 UTC**. Illustrative resour
 - `types.ts`, `domain.ts`: provider contracts, scope/target identities, evidence, currency-safe comparisons, action validation and exports.
 - `providers/demo.ts`, `providers/live.ts`: interchangeable providers; live commands are backend-generated arrays only.
 - `providers/services.ts`, `providers/service-demo.ts`: read-only Databricks/Foundry adapters, projected metadata, separate managed-group costs, service usage/cleanup evidence and isolated fixtures.
+- `providers/cost-policy.ts`: shared billing-read pacing, bounded throttle retries/cooldown and scope/identity-isolated, ten-minute in-memory dataset caching. Resource mutations never use this coordinator.
 - `providers/intelligence.ts`: metric signals, statistical anomalies, deployment/creator evidence, ARM reference discovery and conservative resize preflight.
 - `actions.ts`: shared argument-array builder for exact review previews and live dispatch.
 - `rules.ts`: explicit finding signals, confidence, observation windows, missing signals and savings basis.
@@ -165,6 +179,8 @@ One subscription/public Azure at a time; up to 200 selected groups, 366-day date
 - [Foundry ARM projects](https://learn.microsoft.com/rest/api/aifoundry/accountmanagement/projects/list?view=rest-aifoundry-accountmanagement-2025-06-01)
 - [Azure OpenAI request/token/utilization metric definitions](https://learn.microsoft.com/azure/ai-services/openai/monitor-openai-reference)
 
+- [Cost Management automation, query limits and retry headers](https://learn.microsoft.com/azure/cost-management-billing/costs/manage-automation)
+- [Microsoft Azure cost-query CLI workflow](https://github.com/microsoft/azure-skills/blob/main/.github/plugins/azure-skills/skills/azure-cost/cost-query/workflow.md)
 - [Cost Management forecast](https://learn.microsoft.com/rest/api/cost-management/forecast/usage?view=rest-cost-management-2025-03-01)
 - [Anomaly insights and alert delivery](https://learn.microsoft.com/azure/cost-management-billing/understand/analyze-unexpected-charges)
 - [Scheduled anomaly alert configuration](https://learn.microsoft.com/rest/api/cost-management/scheduled-actions/list-by-scope?view=rest-cost-management-2025-03-01)

@@ -1,3 +1,4 @@
+import { fastBilling } from "./billing-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LiveProvider, resourceFromAzure } from "../providers/live.ts";
@@ -47,7 +48,7 @@ const wait = async (b: any, id: string) => {
   }
   throw new Error("Timeout");
 };
-test("forecasts preserve exact group scopes, cost basis, currency and reject partial group totals", async () => {
+test("forecasts batch selected groups, preserve basis/currency and reject unavailable results", async () => {
   const calls: string[][] = [];
   const provider = new LiveProvider(async (args) => {
     calls.push(args);
@@ -72,7 +73,7 @@ test("forecasts preserve exact group scopes, cost basis, currency and reject par
     if (url.includes("ResourceGraph")) return { data: [] };
     if (url.includes("/query?")) throw new Error("No costs fixture");
     return { value: [] };
-  });
+  }, fastBilling());
   const groups = [
     `/subscriptions/${SUB}/resourcegroups/a`,
     `/subscriptions/${SUB}/resourcegroups/b`,
@@ -81,8 +82,8 @@ test("forecasts preserve exact group scopes, cost basis, currency and reject par
   assert.deepEqual(
     s.forecast.map((f) => [f.currency, f.amount]),
     [
-      ["USD", 24],
-      ["EUR", 18],
+      ["USD", 12],
+      ["EUR", 9],
     ],
   );
   for (const call of calls.filter((c) =>
@@ -91,27 +92,23 @@ test("forecasts preserve exact group scopes, cost basis, currency and reject par
     const body = JSON.parse(call[call.indexOf("--body") + 1]);
     assert.equal(body.type, "AmortizedCost");
     assert.equal(body.includeActualCost, false);
+    assert.deepEqual(body.dataset.filter.dimensions, {
+      name: "ResourceGroup",
+      operator: "In",
+      values: ["a", "b"],
+    });
     assert.ok(
-      groups.some((id) =>
-        call.some((v) =>
-          v.includes(id + "/providers/Microsoft.CostManagement/forecast"),
-        ),
+      call.includes(
+        `https://management.azure.com/subscriptions/${SUB}/providers/Microsoft.CostManagement/forecast?api-version=2025-03-01`,
       ),
     );
+    assert.ok(call.includes("ClientType=FDOAzureFinOps"));
   }
   const denied = new LiveProvider(async (args) => {
     if (args[0] === "account") return { id: SUB, tenantId: TENANT };
     if (args[0] === "group") return [];
-    const url = args[args.indexOf("--url") + 1] ?? "";
-    if (url.includes("/resourcegroups/a/") && url.includes("/forecast?"))
-      return {
-        properties: {
-          columns: [{ name: "Cost" }, { name: "Currency" }],
-          rows: [[12, "USD"]],
-        },
-      };
     throw new Error("Permission denied");
-  });
+  }, fastBilling());
   const partial = await denied.snapshot({ ...scope, groupIds: groups });
   assert.equal(partial.forecast.length, 0);
   assert.match(partial.coverage.forecast, /Unavailable/);
@@ -372,7 +369,7 @@ test("observed changes enforce lag and compare same exact target/basis without c
         ],
       },
     };
-  });
+  }, fastBilling());
   const op = {
     id: "op",
     startedAt: "2025-01-08T12:00:00Z",
