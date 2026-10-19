@@ -467,12 +467,13 @@ test("same-scope refresh and host remount retain service exploration without res
       f.$('[aria-label="Search databricks resources"]').value,
       "analytics",
     );
-    const saved = JSON.parse(
-      f.win.sessionStorage.getItem("azure-finops.exploration.v1"),
-    );
+    await f.wait(() => f.disk.get("exploration")?.serviceId);
+    const saved = f.disk.get("exploration");
     assert.ok(saved.serviceId);
     assert.equal(saved.snapshot, undefined);
     assert.equal(saved.serviceData, undefined);
+    f.win.__afFinOpsCleanup();
+    delete f.win.__afFinOpsView;
     f.win.document.body.innerHTML = render();
     const cleanup = f.win.eval(onLoad());
     assert.equal(

@@ -22,7 +22,7 @@ try {
   const loader = path.join(temp, "host.cjs");
   await build({
     stdin: {
-      contents: `export {EsbuildVirtualFsPlugin} from ${JSON.stringify(path.join(host, "src/utils/esbuild/plugins/virtual-fs.js"))}; export {runPluginWorkspaceTests} from ${JSON.stringify(path.join(host, "src/utils/plugins/runtime/pluginTestRunner.js"))}; export {buildPluginRuntimeBundle} from ${JSON.stringify(path.join(host, "src/utils/plugins/runtime/pluginRuntimeBundle.js"))};`,
+      contents: `export {EsbuildVirtualFsPlugin} from ${JSON.stringify(path.join(host, "src/utils/esbuild/plugins/virtual-fs.js"))}; export {runPluginWorkspaceTests} from ${JSON.stringify(path.join(host, "src/utils/plugins/runtime/pluginTestRunner.js"))}; export {buildPluginRuntimeBundle} from ${JSON.stringify(path.join(host, "src/utils/plugins/runtime/pluginRuntimeBundle.js"))}; export {normalizePluginRenderPayload} from ${JSON.stringify(path.join(host, "src/components/plugin/utils/pluginRenderSecurity.js"))};`,
       resolveDir: host,
     },
     bundle: true,
@@ -116,7 +116,12 @@ try {
       throw new Error("Host did not rebuild the source entry.");
     const result = spawnSync(
       process.execPath,
-      [path.join(root, "scripts/deployment-smoke.cjs"), runtime.entry, temp],
+      [
+        path.join(root, "scripts/deployment-smoke.cjs"),
+        runtime.entry,
+        temp,
+        loader,
+      ],
       {
         cwd: root,
         stdio: "inherit",

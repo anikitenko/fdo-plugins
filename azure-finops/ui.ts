@@ -131,7 +131,24 @@ export function mountFinOps(root: HTMLElement) {
     string,
     { query: string; category: string; index: number; candidatePage: number }
   > = {};
-  const viewKey = "azure-finops.exploration.v1";
+  let viewSaveTimer: number | undefined;
+  let viewSaveWarning = false;
+  function saveExploration(prefs: any) {
+    void request("saveExploration", { view: prefs })
+      .then(() => {
+        viewSaveWarning = false;
+      })
+      .catch(() => {
+        if (active && !viewSaveWarning) {
+          viewSaveWarning = true;
+          report(
+            new Error(
+              "Exploration preferences could not be saved to FDO plugin storage.",
+            ),
+          );
+        }
+      });
+  }
   function rememberView() {
     if (!scope) return;
     const prefs = {
@@ -156,21 +173,14 @@ export function mountFinOps(root: HTMLElement) {
       tableScroll: $("af-resource-table")?.scrollTop ?? 0,
     };
     win.__afFinOpsView = structuredClone(prefs);
-    try {
-      window.sessionStorage.setItem(viewKey, JSON.stringify(prefs));
-    } catch {
-      /* Sandboxed hosts can deny browser storage; keep the in-memory fallback. */
-    }
+    if (viewSaveTimer !== undefined) window.clearTimeout(viewSaveTimer);
+    viewSaveTimer = window.setTimeout(() => {
+      viewSaveTimer = undefined;
+      saveExploration(prefs);
+    }, 300);
   }
-  function rememberedView(): any {
-    try {
-      return (
-        JSON.parse(window.sessionStorage.getItem(viewKey) ?? "null") ??
-        win.__afFinOpsView
-      );
-    } catch {
-      return win.__afFinOpsView;
-    }
+  function rememberedView(saved: any): any {
+    return viewMatches(win.__afFinOpsView) ? win.__afFinOpsView : saved;
   }
   function restoreScroll(view: any) {
     if ($("af-resource-table"))
@@ -3453,7 +3463,7 @@ export function mountFinOps(root: HTMLElement) {
         basis: "ActualCost",
         ...scopeDates("30"),
       };
-      const remembered = rememberedView();
+      const remembered = rememberedView(boot.exploration);
       const restore = viewMatches(remembered);
       if (restore) {
         scope = structuredClone(remembered.scope);
@@ -3555,6 +3565,11 @@ export function mountFinOps(root: HTMLElement) {
   const cleanup = () => {
     if (!active) return;
     rememberView();
+    if (viewSaveTimer !== undefined) {
+      window.clearTimeout(viewSaveTimer);
+      viewSaveTimer = undefined;
+      saveExploration(win.__afFinOpsView);
+    }
     active = false;
     delete (root as any).__afCleanup;
     if (win.__afFinOpsCleanup === cleanup) delete win.__afFinOpsCleanup;

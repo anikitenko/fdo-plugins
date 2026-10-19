@@ -18,6 +18,7 @@ import {
   reviewAction,
   fingerprint,
 } from "./domain.ts";
+import { normalizeExploration } from "./exploration.ts";
 import { CostReadCoordinator, retryAfterMs } from "./providers/cost-policy.ts";
 import { DemoProvider } from "./providers/demo.ts";
 import { LiveProvider, type Cli } from "./providers/live.ts";
@@ -55,6 +56,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
   const jobs = new Map<string, Job>(),
     reviews = new Map<string, Review>();
   let executing = false;
+  let durableExplorationJSON: string | undefined;
   const billing = new CostReadCoordinator();
   function load() {
     if (loaded) return;
@@ -80,16 +82,26 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
           : op,
       );
     }
+    const savedExploration = getStore().get("exploration");
+    if (savedExploration !== undefined)
+      durableExplorationJSON = JSON.stringify(savedExploration);
     loaded = true;
   }
-  async function persist() {
-    const snapshot = structuredClone(settings);
+  function persist() {
+    return persistValue("settings", settings);
+  }
+  async function persistValue(key: string, value: unknown) {
+    const snapshot = structuredClone(value);
     const next = persistTail.then(async () => {
+      const encoded =
+        key === "exploration" ? JSON.stringify(snapshot) : undefined;
+      if (key === "exploration" && encoded === durableExplorationJSON) return;
       const store = getStore();
       if (!store.flush)
         throw new Error("Durable storage flush is unavailable.");
-      store.set("settings", snapshot);
+      store.set(key, snapshot);
       await store.flush();
+      if (key === "exploration") durableExplorationJSON = encoded;
     });
     persistTail = next.catch(() => {});
     await next;
@@ -355,12 +367,28 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
   return {
     async bootstrap() {
       load();
+      const saved = getStore().get("exploration");
+      let exploration;
+      if (saved) {
+        try {
+          exploration = normalizeExploration(saved, settings);
+        } catch {
+          /* Optional preferences from an old configuration are discarded. */
+        }
+      }
       return {
         settings,
+        exploration,
         storage: "Durable JSON storage ready",
         hostNote:
           "Custom process scope required for the full Azure read/manage journey. Sign in manually; tokens never enter plugin storage.",
       };
+    },
+    async saveExploration(input: any) {
+      load();
+      const exploration = normalizeExploration(input?.view, settings);
+      await persistValue("exploration", exploration);
+      return { saved: true };
     },
     async configure(input: any) {
       load();

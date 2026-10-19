@@ -56,6 +56,19 @@ const sdk = require("@anikitenko/fdo-sdk"),
     assert.match(html, /id="azure-finops"/);
     assert.match(html, /grid-template-columns:228px/);
     assert.equal(typeof JSON.parse(transport.onLoad), "string");
+    const { normalizePluginRenderPayload } = require(process.argv[4]);
+    const checked = normalizePluginRenderPayload(transport);
+    assert.equal(checked.onLoad, JSON.parse(transport.onLoad));
+    assert.throws(
+      () =>
+        normalizePluginRenderPayload({
+          ...transport,
+          onLoad: JSON.stringify(
+            "(()=>window.sessionStorage.getItem('blocked'))()",
+          ),
+        }),
+      /blocked sessionStorage/,
+    );
     response = await PluginRegistry.callHandler("azure-finops.configure", {
       mode: "demo",
       cli: "/usr/local/bin/az",
@@ -69,7 +82,7 @@ const sdk = require("@anikitenko/fdo-sdk"),
     response = await PluginRegistry.callHandler("azure-finops.bootstrap", {});
     assert.equal(response.data.settings.cli, "/usr/local/bin/az");
     console.log(
-      "Deployment smoke passed: compiled storage/storage.json manifest, missing JSON-grant rejection, real host startup, SDK transport and durable settings across reload.",
+      "Deployment smoke passed: compiled storage/storage.json manifest, missing JSON-grant rejection, real host startup/render-source guard, SDK transport and durable settings across reload.",
     );
   } finally {
     PluginRegistry.clearPlugin();
