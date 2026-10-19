@@ -49,6 +49,16 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
     const box = byId('rc-message'); box.hidden = !text; box.dataset.fdoVariant = error ? 'error' : 'info'; box.setAttribute('role', error ? 'alert' : 'status');
     box.querySelector('[data-fdo-slot="message"]')!.textContent = text;
   };
+  const notifyLastBatch = () => {
+    const text = 'Keep at least one batch. Create another batch before deleting this one.';
+    if (typeof win.Notyf !== 'function') {message(text); return;}
+    // Reuse this view's host-provided notifier across serialized callback remounts.
+    const notifications = (root as any).__rcNotifications ??= new win.Notyf({duration: 5000, dismissible: true,
+      position: {x: 'right', y: 'top'}, types: [{type: 'info', background: '#2785fa', icon: false}]});
+    notifications.dismissAll();
+    notifications.open({type: 'info', message: text});
+  };
+  disposers.push(() => (root as any).__rcNotifications?.dismissAll());
   async function rawRequest(handler: string, content: unknown) {
     if (typeof win.createBackendReq !== 'function') throw new Error('The FDO backend bridge is unavailable. Open this plugin inside FDO.');
     const raw = await win.createBackendReq('UI_MESSAGE', {handler: `remote-commands.${handler}`, content});
@@ -450,7 +460,7 @@ export function mountRemoteCommands(root: HTMLElement, helpers: {mountTerminal: 
       if (id === 'rc-save') {batch()!.script = getEditor(); persist(); drawBatches(); dirty();}
       if (id === 'rc-retry-save') persist();
       if (id === 'rc-delete-batch') {
-        if (state().batches.length === 1) throw new Error('Keep at least one batch. Create another batch before deleting this one.');
+        if (state().batches.length === 1) {notifyLastBatch(); return;}
         const b = batch()!; confirmAction(`Delete “${b.name}” and its draft?`, () => {state().batches = state().batches.filter(i => i.id !== b.id); state().selectedBatch = state().batches[0].id; persist(); switchVM(current);});
       }
       if (id === 'rc-copy-batch') copyToVM('batch', batch()!.id);

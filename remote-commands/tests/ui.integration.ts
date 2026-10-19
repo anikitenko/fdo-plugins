@@ -135,6 +135,32 @@ test('batch CRUD, literal replacement and cross-VM copies retain drafts', async 
   } finally {f.dom.window.close();}
 });
 
+test('deleting the last batch shows an informational toast and keeps the batch and draft', async () => {
+  const f = await fixture(), notices: any[] = [];
+  let dismissals = 0;
+  f.win.Notyf = class {
+    constructor(public options: any) {assert.equal(options.dismissible, true); assert.equal(options.duration, 5000);}
+    open(notice: any) {notices.push(notice);}
+    dismissAll() {dismissals++;}
+  };
+  try {
+    for (let i = 0; i < 2; i++) {await f.click('#rc-delete-batch'); await f.action('Delete');}
+    await f.type('#rc-editor', 'echo retained draft');
+    const before = f.$('#rc-message').textContent;
+    await f.click('#rc-delete-batch');
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].type, 'info');
+    assert.equal(notices[0].message, 'Keep at least one batch. Create another batch before deleting this one.');
+    assert.equal(f.$('#rc-dialog').open, false);
+    assert.equal(f.$('#rc-message').textContent, before);
+    assert.equal(f.$('#rc-batches').options.length, 1);
+    assert.equal(f.$('#rc-editor').value, 'echo retained draft');
+    assert.equal(f.persisted.get('vm:dev').batches.length, 1);
+    f.win.dispatchEvent(new f.win.Event('pagehide')); await f.settle();
+    assert.ok(dismissals >= 2, 'owned notices are dismissed on view cleanup');
+  } finally {f.dom.window.close();}
+});
+
 test('saved scripts support metadata, search, favorites, edit, reorder, insert, copy and deletion', async () => {
   const f = await fixture();
   const savedAction = async (label: string, index = 0) => {const b = [...f.win.document.querySelectorAll('#rc-saved article')][index]!.querySelectorAll('button'); [...b].find((n: any) => n.textContent === label)!.click(); await f.settle();};
