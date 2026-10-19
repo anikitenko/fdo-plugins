@@ -371,7 +371,22 @@ export function mountFinOps(root: HTMLElement) {
     $("af-group-popover").hidden = true;
     $("af-groups-button").setAttribute("aria-expanded", "false");
   }
+  function connection(account?: Account) {
+    $("af-identity").textContent =
+      account?.user ??
+      (settings.mode === "demo" ? "Demo profile" : "CLI profile not checked");
+    $("af-identity").title = account
+      ? `Tenant ${account.tenantId} · Subscription ${account.id} · ${account.userType ?? "CLI profile"}. Subscription metadata is not proof of API permissions.`
+      : "No current subscription profile has been read.";
+    $("af-connection").textContent =
+      settings.mode === "demo"
+        ? "Demo · no Azure calls"
+        : account
+          ? "Live · CLI profile · permissions vary"
+          : "Live · connection not checked";
+  }
   function invalidate() {
+    connection();
     generation++;
     detailSequence++;
     serviceSequence++;
@@ -419,16 +434,27 @@ export function mountFinOps(root: HTMLElement) {
       snapshot = result;
       if (groupIssue) snapshot!.warnings.unshift(groupIssue);
       scope = result.scope;
-      $("af-identity").textContent =
-        accounts.find((a) => a.id === scope.subscriptionId)?.user ??
-        "Unknown identity";
-      $("af-connection").textContent =
-        settings.mode === "demo"
-          ? "Demo · no Azure calls"
-          : "CLI identity verified · permissions vary";
+      const profile =
+        settings.mode === "live"
+          ? result.cliAccount
+          : accounts.find(
+              (a) =>
+                a.id === scope.subscriptionId && a.tenantId === scope.tenantId,
+            );
+      connection(profile);
+      if (result.cliAccount) {
+        accounts = accounts.map((a) =>
+          a.id === result.cliAccount.id &&
+          a.tenantId === result.cliAccount.tenantId
+            ? { ...a, ...result.cliAccount }
+            : a,
+        );
+        accountControls();
+      }
       renderData();
     } catch (error) {
       if (ticket === generation && active) {
+        connection();
         report(error);
         $("af-main").replaceChildren(
           el(
@@ -2825,6 +2851,13 @@ export function mountFinOps(root: HTMLElement) {
         "af-callout",
       ),
     );
+    panel.append(
+      el(
+        "p",
+        "The sidebar shows CLI subscription profile metadata, not proof of token identity or API permissions. Check CLI & sign-in refreshes the subscription list and initially selects the CLI default. If the account differs from your Terminal, check that FDO uses the same host user, HOME and AZURE_CONFIG_DIR. Sign in manually with the intended account and tenant in that same CLI profile, then check again. Inventory, costs, metrics and management have independent Azure permissions.",
+        "af-muted",
+      ),
+    );
     let mode = settings.mode;
     const provider = select(
       "Provider",
@@ -3197,6 +3230,7 @@ export function mountFinOps(root: HTMLElement) {
       settings = boot.settings;
       operations = settings.operations;
       $("af-mode-badge").textContent = settings.mode.toUpperCase();
+      connection();
       accounts = await run("accounts");
       if (!accounts.length) {
         navigate("settings");
@@ -3228,6 +3262,7 @@ export function mountFinOps(root: HTMLElement) {
           operations: [],
           demoOverrides: {},
         };
+      connection();
       navigate("settings");
       report(e);
     }

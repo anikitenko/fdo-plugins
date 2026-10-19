@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LiveProvider, resourceFromAzure } from "../providers/live.ts";
 import { createBackend } from "../backend.ts";
-import { SUB, TENANT } from "../providers/demo.ts";
+import { SUB, TENANT, OTHER_SUB } from "../providers/demo.ts";
 import type { Scope } from "../types.ts";
 const scope: Scope = {
   tenantId: TENANT,
@@ -104,4 +104,81 @@ test("origin fields do not infer creation from group age or retained writes", ()
   assert.equal(resource.creator.confidence, "Unknown");
   assert.equal(resource.firstObserved, "2026-10-19T12:00:00Z");
   assert.equal(resource.events.length, 0);
+});
+
+test("account discovery refreshes metadata and prefers the CLI-selected default subscription", async () => {
+  const commands: string[][] = [];
+  const p = new LiveProvider(async (args) => {
+    commands.push(args);
+    if (args[1] === "show") return { id: OTHER_SUB, tenantId: TENANT };
+    return [
+      {
+        id: SUB,
+        tenantId: TENANT,
+        state: "Enabled",
+        user: { name: "older@example.com" },
+      },
+      {
+        id: OTHER_SUB,
+        tenantId: TENANT,
+        state: "Enabled",
+        user: { name: "current@example.com", type: "user" },
+      },
+    ];
+  });
+  const accounts = await p.accounts();
+  assert.equal(accounts[0].id, OTHER_SUB);
+  assert.equal(accounts[0].isDefault, true);
+  assert.equal(accounts[0].user, "current@example.com");
+  assert.ok(commands.find((args) => args[1] === "list")?.includes("--refresh"));
+});
+test("snapshots carry the exact scoped CLI profile and stop on identity drift before inventory", async () => {
+  let identity = "current@example.com",
+    checks = 0,
+    inventoryCalls = 0;
+  const p = new LiveProvider(async (args) => {
+    if (args[0] === "account") {
+      checks++;
+      return {
+        id: SUB,
+        tenantId: TENANT,
+        user: { name: identity, type: "user" },
+      };
+    }
+    if (args[0] === "group") return [];
+    const url = args[args.indexOf("--url") + 1] ?? "";
+    if (url.includes("ResourceGraph")) {
+      inventoryCalls++;
+      return { data: [] };
+    }
+    return url.includes("/query?")
+      ? { properties: { columns: [], rows: [] } }
+      : { value: [] };
+  }, fastBilling());
+  const first = await p.snapshot(scope);
+  assert.equal(first.cliAccount?.user, identity);
+  assert.equal(first.cliAccount?.id, SUB);
+  assert.ok(first.cliAccount?.checkedAt);
+  identity = "changed@example.com";
+  await assert.rejects(() => p.snapshot(scope), /identity changed/);
+  assert.equal(inventoryCalls, 1);
+  assert.ok(checks >= 3);
+  let graph = 0,
+    calls = 0;
+  const during = new LiveProvider(async (args) => {
+    if (args[0] === "account")
+      return {
+        id: SUB,
+        tenantId: TENANT,
+        user: { name: ++calls === 1 ? "first" : "second" },
+      };
+    graph++;
+    return [];
+  }, fastBilling());
+  await assert.rejects(() => during.snapshot(scope), /identity changed/);
+  assert.equal(
+    graph,
+    0,
+    "Nested group context checks cannot hide profile drift as partial coverage",
+  );
 });

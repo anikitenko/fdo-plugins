@@ -76,6 +76,29 @@ process.parentPort.postMessage = () => {};
       window.eval(source);
     }, onLoad);
     await page.locator("#af-resource-table tbody tr").first().waitFor();
+    await page.locator("#af-save-view").click();
+    const viewDialog = page.locator("#af-view-dialog");
+    const dialogBounds = await viewDialog.boundingBox();
+    const inputBounds = await page.locator("#af-view-name").boundingBox();
+    const cancelBounds = await page.locator("#af-view-cancel").boundingBox();
+    assert.ok(
+      dialogBounds && dialogBounds.width <= 440,
+      "save view uses a compact dialog",
+    );
+    assert.ok(
+      inputBounds &&
+        cancelBounds &&
+        cancelBounds.y >= inputBounds.y + inputBounds.height + 16,
+      "dialog actions clear the input and focus ring",
+    );
+    assert.equal(
+      await page
+        .locator("#af-view-name")
+        .evaluate((input) => document.activeElement === input),
+      true,
+    );
+    await page.screenshot({ path: "/private/tmp/azure-finops-save-view.png" });
+    await page.locator("#af-view-cancel").click();
     await page.getByRole("row").filter({ hasText: "vm-dev-runner" }).click();
     await page.getByRole("heading", { name: "Origin & ownership" }).waitFor();
     await page.locator("#af-groups-button").click();
@@ -135,6 +158,16 @@ process.parentPort.postMessage = () => {};
     await page.screenshot({ path: "/private/tmp/azure-finops-sidebar.png" });
     await page.setViewportSize({ width: 740, height: 1000 });
     await page.locator('[data-page="resources"]').click();
+    await page.locator("#af-save-view").click();
+    const mobileDialog = await viewDialog.boundingBox();
+    assert.ok(
+      mobileDialog &&
+        mobileDialog.x >= 0 &&
+        mobileDialog.x + mobileDialog.width <= 740,
+      "save view fits the mobile viewport",
+    );
+    await page.keyboard.press("Escape");
+    assert.equal(await viewDialog.isVisible(), false);
     await page.screenshot({
       path: "/private/tmp/azure-finops-mobile.png",
       fullPage: true,

@@ -545,6 +545,28 @@
 .shell dialog h2 {
   margin-bottom: 16px;
 }
+.shell #af-view-dialog {
+  width: min(440px, calc(100vw - 32px));
+}
+.shell #af-view-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.shell #af-view-dialog h2 {
+  margin: 0;
+}
+.shell #af-view-dialog label {
+  gap: 8px;
+}
+.shell #af-view-name {
+  width: 100%;
+  min-width: 0;
+}
+.shell #af-view-dialog .af-row {
+  justify-content: flex-end;
+  padding-top: 4px;
+}
 .shell .af-review-item {
   display: grid;
   gap: 10px;

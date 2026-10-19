@@ -13,6 +13,8 @@ export type Account = {
   id: string;
   name: string;
   user: string;
+  userType?: string;
+  isDefault?: boolean;
 };
 export type Evidence<T = string> = {
   value: T | null;
@@ -123,6 +125,7 @@ export type Budget = {
   period: string;
 };
 export type Snapshot = {
+  cliAccount?: Account & { checkedAt: string };
   scope: Scope;
   now: string;
   fetchedAt: string;

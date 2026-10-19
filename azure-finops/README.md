@@ -32,6 +32,14 @@ The curated host `azure-cli` scope inspected during development excludes `rest` 
 
 The plugin's REST requests use `az rest`, authenticated internally by the CLI, not direct fetch or a token passed to the UI. ARM URLs are constrained to the public ARM origin and matching subscription. The separate Databricks inspection adapter permits only fixed read-only collection routes on the exact ARM-reported `adb-<workspace-id>.<shard>.azuredatabricks.net` host; it uses the documented Databricks Entra audience, with CLI-managed credentials. No token command, PAT, secret export or arbitrary data-plane URL is accepted. Sovereign cloud endpoints are not implemented in this scaffold.
 
+## Account context and permission errors
+
+The initial subscription follows the CLI-selected default returned by `az account show`, rather than the first arbitrary entry in a multi-account list. **Check CLI & sign-in** refreshes subscription discovery with `az account list --all --refresh`, using existing manual sign-in. Each resource load reads `az account show --subscription <exact ID>` and returns that scoped profile metadata with its results. The sidebar uses that result, clears previous/demo accounts on scope or provider changes and failures, and shows tenant/subscription details in its tooltip. Detected profile identity drift during a job aborts that job; old results are discarded.
+
+A CLI profile is local subscription metadata, not proof of the principal in a token or authorization to every API. Inventory can succeed while costs, metrics or another provider returns an independent Azure permission denial. The plugin never switches users, changes the CLI default, logs in, extracts a token or grants roles. Do not change external CLI sign-in during a running plan.
+
+If the displayed profile differs from your Terminal, compare `az account show --subscription YOUR_SUBSCRIPTION_ID` using the same executable, host user, `HOME` and `AZURE_CONFIG_DIR` as FDO. FDO's host environment may differ from your interactive shell. Complete `az login --tenant YOUR_TENANT_ID` manually with the intended account in that same CLI configuration, then use Check CLI & sign-in again and select the exact subscription. There is no automatic fallback to another account when Azure denies a request.
+
 ## Main journey
 
 **Subscription → groups → costs → resource origin → dependencies → proposed action → typed confirmation → Operations**.
@@ -189,6 +197,7 @@ One subscription/public Azure at a time; up to 200 selected groups, 366-day date
 - [VM metric definitions](https://learn.microsoft.com/azure/virtual-machines/monitor-vm-reference)
 - [VM resize](https://learn.microsoft.com/azure/virtual-machines/resize-vm)
 - [Azure deployment history](https://learn.microsoft.com/azure/azure-resource-manager/templates/deployment-history)
+- [Azure CLI subscription profile and refresh](https://learn.microsoft.com/cli/azure/account)
 - [Azure CLI manual authentication](https://learn.microsoft.com/cli/azure/authenticate-azure-cli-interactively)
 - [Cost Management queries and grouping limits](https://learn.microsoft.com/rest/api/cost-management/query/usage?view=rest-cost-management-2025-03-01)
 - [Resource Graph through Azure CLI REST](https://learn.microsoft.com/azure/governance/resource-graph/first-query-rest-api)

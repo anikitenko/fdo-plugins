@@ -424,3 +424,25 @@ test("late service inspections cannot repopulate after subscription changes", as
     f.cleanup();
   }
 });
+
+test("switching from Demo to a denied Live connection clears the demo identity immediately", async () => {
+  const f = await fixture();
+  try {
+    assert.match(f.$("#af-identity").textContent, /engineering@contoso/);
+    await f.click('[data-page="settings"]');
+    await f.input('[aria-label="Provider"]', "live", "change");
+    await f.action("Save provider settings");
+    await f.wait(() => f.$("#af-mode-badge").textContent === "LIVE");
+    assert.equal(f.$("#af-identity").textContent, "CLI profile not checked");
+    assert.doesNotMatch(
+      f.$(".af-sidebar").textContent,
+      /engineering@contoso|Demo · no Azure calls/,
+    );
+    await f.action("Check CLI & sign-in");
+    await f.wait(() => f.hostRequests.length > 0 && f.$("#af-progress").hidden);
+    assert.equal(f.$("#af-identity").textContent, "CLI profile not checked");
+    assert.doesNotMatch(f.$("#af-connection").textContent, /verified/);
+  } finally {
+    f.cleanup();
+  }
+});

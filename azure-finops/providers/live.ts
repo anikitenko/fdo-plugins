@@ -178,6 +178,7 @@ export function resourceFromAzure(
 }
 export class LiveProvider implements Provider {
   private subscriptionId = "";
+  private cliAccount?: Account & { checkedAt: string };
   private partition = "";
   private cachePrefix = "";
   private readonly unresolvedIdentity = crypto.randomUUID();
@@ -200,13 +201,13 @@ export class LiveProvider implements Provider {
   }
   async accounts(): Promise<Account[]> {
     // account show detects missing CLI or missing manual sign-in; never run login or token commands.
-    await this.cli(
+    const current = await this.cli(
       ["account", "show"],
       "Check Azure CLI availability and manual sign-in",
     );
     const rows = await this.cli(
-      ["account", "list", "--all"],
-      "List subscriptions visible to the signed-in CLI identity",
+      ["account", "list", "--all", "--refresh"],
+      "Refresh subscriptions using existing manual CLI sign-in",
     );
     return rows
       .filter((a: any) => a.state === "Enabled")
@@ -215,20 +216,55 @@ export class LiveProvider implements Provider {
         id: a.id,
         name: a.name,
         user: a.user?.name ?? "Unknown identity",
-      }));
+        userType: a.user?.type ?? "Unknown",
+        isDefault:
+          normalizeId(a.id) === normalizeId(current.id) &&
+          normalizeId(a.tenantId) === normalizeId(current.tenantId),
+      }))
+      .sort(
+        (a: Account, b: Account) =>
+          Number(!!b.isDefault) - Number(!!a.isDefault),
+      );
   }
   private async account(scope: Scope) {
     const a = await this.cli(
       ["account", "show", "--subscription", scope.subscriptionId],
-      "Verify exact subscription and tenant context",
-    );
+      "Read CLI profile for the exact subscription and tenant (not an API permission check)",
+    ).catch((error: unknown) => {
+      throw Object.assign(
+        error instanceof Error ? error : new Error("CLI profile lookup failed"),
+        { cliContextInvalid: true },
+      );
+    });
     if (
       normalizeId(a.id) !== normalizeId(scope.subscriptionId) ||
       normalizeId(a.tenantId) !== normalizeId(scope.tenantId)
     )
-      throw new Error(
-        "CLI tenant/subscription context changed. Sign in manually and review the scope again.",
+      throw Object.assign(
+        new Error(
+          "CLI tenant/subscription context changed. Sign in manually and review the scope again.",
+        ),
+        { cliContextInvalid: true },
       );
+    if (
+      this.cliAccount &&
+      (this.cliAccount.user !== (a.user?.name ?? "Unknown identity") ||
+        this.cliAccount.userType !== (a.user?.type ?? "Unknown"))
+    )
+      throw Object.assign(
+        new Error(
+          "CLI profile identity changed during this request. Old results were discarded. Check CLI & sign-in again before retrying.",
+        ),
+        { cliContextInvalid: true },
+      );
+    this.cliAccount = {
+      tenantId: a.tenantId,
+      id: a.id,
+      name: a.name ?? a.id,
+      user: a.user?.name ?? "Unknown identity",
+      userType: a.user?.type ?? "Unknown",
+      checkedAt: new Date().toISOString(),
+    };
     this.subscriptionId = scope.subscriptionId;
     this.partition = JSON.stringify([
       this.readContext.namespace ?? "",
@@ -456,6 +492,7 @@ export class LiveProvider implements Provider {
     this.billingTimes = [];
     const now = new Date().toISOString();
     const snapshot: Snapshot = {
+      cliAccount: this.cliAccount,
       scope,
       now,
       fetchedAt: now,
@@ -478,6 +515,7 @@ export class LiveProvider implements Provider {
         await work();
         snapshot.coverage[key] = "Available";
       } catch (e) {
+        if (e && typeof e === "object" && "cliContextInvalid" in e) throw e;
         if (isBillingThrottle(e)) {
           snapshot.coverage[key] = "Throttled / deferred";
           billingFailures.add(key);
@@ -642,6 +680,7 @@ export class LiveProvider implements Provider {
         `Azure Cost Management throttled billing reads after bounded retries; deferred ${[...billingFailures].join(", ")}.${wait} Inventory is shown where permitted; missing cost data is unknown, not zero. Refresh does not bypass the shared cooldown.`,
       );
     }
+    snapshot.cliAccount = this.cliAccount;
     if (this.billingTimes.length)
       snapshot.coverage.billingFreshness = `Billing data oldest fetch ${new Date(Math.min(...this.billingTimes)).toISOString()}; ${this.cacheHits} query result(s) reused from the 10-minute in-memory cache. Inventory freshness is separate.`;
     return snapshot;
