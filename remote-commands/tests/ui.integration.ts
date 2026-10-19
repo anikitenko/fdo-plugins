@@ -152,6 +152,23 @@ test('saved scripts support metadata, search, favorites, edit, reorder, insert, 
   } finally {f.dom.window.close();}
 });
 
+test('commenting out a command removes its parameter from the editor and execution review', async () => {
+  const f = await fixture();
+  try {
+    f.$('#rc-run-mode').value = 'batch';
+    await f.type('#rc-editor', 'echo {{value}}\n# tail {{log_path}}\n  # {{malformed-key}}');
+    assert.ok(f.$('#rc-parameters [aria-label="Template value"]'));
+    assert.equal(f.$('#rc-parameters [aria-label="Template log_path"]'), null);
+    await f.type('#rc-parameters [aria-label="Template value"]', 'active');
+    await f.click('#rc-run');
+    assert.equal(f.$('dialog [aria-label="Template log_path"]'), null);
+    assert.equal(f.$('dialog pre').textContent, 'set -e; echo active\n# tail {{log_path}}\n  # {{malformed-key}}');
+    await f.action('Cancel');
+    await f.type('#rc-editor', 'echo {{value}}\ntail {{log_path}}');
+    assert.ok(f.$('#rc-parameters [aria-label="Template log_path"]'), 'uncommenting restores the required field');
+  } finally {f.dom.window.close();}
+});
+
 test('selected text and saved Run require review; template edits invalidate approval and results are safe text', async () => {
   const f = await fixture();
   try {

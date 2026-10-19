@@ -12,7 +12,9 @@ export function initialState(): VMState {
 }
 
 export function placeholders(script: string): string[] {
-  return [...new Set([...script.matchAll(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g)].map(m => m[1]))];
+  // Keep this helper self-contained: it is serialized into the iframe.
+  const active = script.split('\n').filter(line => !/^[\t ]*#/.test(line)).join('\n');
+  return [...new Set([...active.matchAll(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g)].map(m => m[1]))];
 }
 
 /** Placeholders are explicit shell fragments, including their own quoting. Never execute in the UI. */
@@ -20,8 +22,10 @@ export function resolveScript(script: string, values: Record<string, string>, st
   if (!script.trim() || script.includes('\0') || script.length > 15000) throw new Error('Enter a script of 1–15000 characters without NUL characters.');
   const missing = placeholders(script).filter(key => !Object.hasOwn(values, key) || !values[key].trim());
   if (missing.length) throw new Error(`Fill template values: ${missing.join(', ')}.`);
-  const resolved = script.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g, (_, key: string) => values[key]);
-  if (/\{\{|}}/.test(resolved)) throw new Error('Unresolved or malformed template placeholders.');
+  const resolved = script.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g, (match, key: string, offset: number) =>
+    /^[\t ]*#/.test(script.slice(script.lastIndexOf('\n', offset) + 1, offset)) ? match : values[key]);
+  const active = resolved.split('\n').filter(line => !/^[\t ]*#/.test(line)).join('\n');
+  if (/\{\{|}}/.test(active)) throw new Error('Unresolved or malformed template placeholders.');
   const result = (stopOnError ? 'set -e; ' : '') + resolved;
   if (result.length > 16384 || result.includes('\0')) throw new Error('Resolved script exceeds the SSH limit or contains NUL characters.');
   return result;

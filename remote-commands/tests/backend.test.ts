@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createBackend} from '../backend.ts';
-import {initialState, resolveScript, validateState, serviceMessage} from '../model.ts';
+import {initialState, placeholders, resolveScript, validateState, serviceMessage} from '../model.ts';
 import {describeProfile, publicProfile} from '../profiles.ts';
 
 function fixture() {
@@ -39,6 +39,17 @@ test('resolves explicit shell fragments and rejects missing, malformed and overs
   assert.throws(() => resolveScript('echo {{invalid-key}}', {}, true), /malformed/);
   assert.throws(() => resolveScript('echo {{x}}'.repeat(1500), {x: 'a'.repeat(100)}, true), /limit/);
   assert.throws(() => resolveScript('echo\0bad', {}, false));
+});
+
+test('commented-out lines neither require nor replace placeholders and remain unchanged in the reviewed script', () => {
+  const script = '# tail {{log_path}}\n \t# {{invalid-key}} {{ unfinished\necho {{service}}\n# echo {{service}}';
+  assert.deepEqual(placeholders(script), ['service']);
+  assert.equal(resolveScript(script, {service: 'nginx', log_path: '/ignored'}, true),
+    'set -e; # tail {{log_path}}\n \t# {{invalid-key}} {{ unfinished\necho nginx\n# echo {{service}}');
+  assert.deepEqual(placeholders(initialState().batches.find(batch => batch.id === 'logs')!.script), ['service']);
+  assert.throws(() => resolveScript('# {{ignored}}\necho {{required}}', {}, false), /required/);
+  assert.deepEqual(placeholders('echo "# {{value}}"'), ['value']);
+  assert.equal(resolveScript('echo {{\n value\n}}', {value: 'kept'}, false), 'echo kept');
 });
 
 test('review never executes; tokens bind the reviewed script and VM and cannot be replayed', async () => {
