@@ -322,11 +322,14 @@ test("Databricks and Foundry inspections show billing layers, cleanup evidence a
   const f = await fixture();
   try {
     await f.click('[data-page="databricks"]');
+    assert.match(f.$("#af-main").textContent, /How to see the inspection/);
     assert.match(f.$("#af-main").textContent, /dbx-analytics/);
     await f.action("Inspect service");
     await f.wait(() =>
       f.$("#af-main").textContent.includes("analytics-interactive"),
     );
+    assert.match(f.$("#af-main").textContent, /Read this first/);
+    assert.match(f.$("#af-main").textContent, /Shutdown review/);
     assert.match(f.$("#af-main").textContent, /automatic shutdown disabled/);
     assert.match(f.$("#af-main").textContent, /Possible cleanup steps/);
     assert.match(f.$("#af-main").textContent, /SQL history queries/);

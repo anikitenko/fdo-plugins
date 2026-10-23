@@ -1,42 +1,315 @@
-import { DOM, createInlineAlert } from "@anikitenko/fdo-sdk";
+import {
+  DOM,
+  DOMInput,
+  DOMSemantic,
+  DOMText,
+  createInlineAlert,
+} from "@anikitenko/fdo-sdk";
 import styles from "./styles.css";
 import { mountFinOps } from "./ui.ts";
+
+const TABS: ReadonlyArray<readonly [string, string, string]> = [
+  ["overview", "chart-line", "Overview"],
+  ["groups", "layer-group", "Resource groups"],
+  ["resources", "server", "Resources"],
+  ["databricks", "cubes", "Databricks"],
+  ["foundry", "brain", "Foundry & AI"],
+  ["optimization", "leaf", "Optimization"],
+  ["changes", "arrow-trend-up", "Cost changes"],
+  ["operations", "list-check", "Operations"],
+  ["settings", "gear", "Settings"],
+];
+
 export function render(): string {
-  const dom = new DOM().collectStylesFrom();
+  const text = new DOMText();
+  const fields = new DOMInput();
+  const sem = new DOMSemantic();
+  const dom = new DOM().collectStylesFrom(text, fields, sem);
   if (!styles.shell)
-    return '<section role="alert">Azure FinOps stylesheet unavailable. Rebuild with FDO’s CSS compiler.</section>';
+    return dom.renderHTML(
+      dom.createElement(
+        "section",
+        { role: "alert" },
+        text.createText(
+          "Azure FinOps stylesheet unavailable. Rebuild with FDO’s CSS compiler.",
+        ),
+      ),
+    );
   const cls = dom.createClassFromStyle(styles.shell);
-  const button = (id: string, label: string, extra = "") =>
-    `<button type="button" id="${id}" class="pure-button ${extra.includes("af-primary") ? "af-primary" : ""}" ${extra.replace(/class="[^"]*"/g, "")}>${label}</button>`;
-  const tabs = [
-    ["overview", "chart-line", "Overview"],
-    ["groups", "layer-group", "Resource groups"],
-    ["resources", "server", "Resources"],
-    ["databricks", "cubes", "Databricks"],
-    ["foundry", "brain", "Foundry & AI"],
-    ["optimization", "leaf", "Optimization"],
-    ["changes", "arrow-trend-up", "Cost changes"],
-    ["operations", "list-check", "Operations"],
-    ["settings", "gear", "Settings"],
-  ];
-  return dom.renderHTML(`<main id="azure-finops" class="${cls}">
-    <aside class="af-sidebar"><header class="af-brand"><span class="af-azure" aria-hidden="true">A</span><div><strong>Azure FinOps</strong><span>&amp; Resource Manager</span></div></header><span id="af-mode-badge" class="af-badge">DEMO</span><nav aria-label="FinOps navigation">${tabs.map(([id, icon, label]) => `<button type="button" data-page="${id}" aria-current="false"><i class="fa-solid fa-${icon}" aria-hidden="true"></i>${label}<span ${id === "operations" ? 'id="af-op-count"' : ""}></span></button>`).join("")}</nav><footer><span class="af-dot"></span><strong id="af-connection">Initializing…</strong><p id="af-identity">CLI profile not checked</p><small>CLI only · credentials stay in Azure CLI</small></footer></aside>
-    <section class="af-workspace"><header class="af-heading"><div><span class="af-eyebrow">AZURE CLOUD OPERATIONS</span><h1 id="af-title">Restoring view…</h1></div><div class="af-row">${button("af-refresh", "↻ Refresh")}<small id="af-freshness">Loading…</small></div></header>
-      <section class="af-scope" aria-label="Global Azure scope"><label>Tenant<select id="af-tenant" aria-label="Tenant"></select></label><label>Subscription<select id="af-subscription" aria-label="Subscription"></select></label>
-        <div class="af-group-picker">${button("af-groups-button", "All accessible groups", 'aria-expanded="false" aria-controls="af-group-popover"')}<section id="af-group-popover" hidden="hidden" aria-label="Choose resource groups"><input id="af-group-search" type="search" aria-label="Search resource groups" placeholder="Search resource groups…" /><div class="af-row">${button("af-groups-all", "All accessible groups")}${button("af-groups-clear", "Clear selection")}</div><div id="af-group-list"></div><footer><span id="af-group-count"></span>${button("af-groups-cancel", "Cancel")}${button("af-groups-apply", "Apply", 'class="pure-button af-primary"')}</footer></section></div>
-        <label>Period<select id="af-period"><option value="30">Last 30 days</option><option value="7">Last 7 days</option><option value="mtd">Month to date</option><option value="custom">Custom</option></select></label><label>Cost basis<select id="af-basis"><option value="ActualCost">Actual</option><option value="AmortizedCost">Amortized</option></select></label><label>Saved view<select id="af-view"><option value="">Current view</option></select></label>${button("af-save-view", "Save view")}
-        <div id="af-custom-dates" class="af-row" hidden="hidden"><label>From<input id="af-from" type="date" /></label><label>Through<input id="af-to" type="date" /></label>${button("af-dates-apply", "Apply dates")}</div>
-      </section>
-      ${createInlineAlert(dom, { id: "af-message", variant: "info", message: "Loading scoped Azure data…" })}
-      <div id="af-progress" role="status" hidden="hidden">Loading… <span id="af-progress-detail"></span> ${button("af-stop-loading", "Stop local loading")}</div>
-      <div id="af-context" class="af-muted"></div><section id="af-cards" class="af-cards" aria-label="Cost and resource summary"></section>
-      <section id="af-main"></section>
-      <footer id="af-plan-bar" class="af-plan-bar"><div><i class="fa-solid fa-clipboard-list" aria-hidden="true"></i><strong>Action plan</strong><span id="af-plan-count">0 proposed actions</span><small>Adding an action never executes it</small></div>${button("af-review", "Review plan →", 'class="pure-button af-primary"')}</footer>
-    </section>
-    <dialog id="af-review-dialog" aria-labelledby="af-review-title"><header class="af-row af-between"><h2 id="af-review-title">Review action plan</h2>${button("af-review-close", "Close")}</header><div id="af-review-content"></div></dialog>
-    <dialog id="af-view-dialog" aria-labelledby="af-view-title"><h2 id="af-view-title">Save current view</h2><label>View name<input id="af-view-name" maxlength="80" /></label><div class="af-row">${button("af-view-cancel", "Cancel")}${button("af-view-confirm", "Save view", 'class="pure-button af-primary"')}</div></dialog>
-  </main>`);
+  const button = (
+    id: string,
+    label: string,
+    primary = false,
+    attrs: Record<string, string> = {},
+  ) =>
+    dom.createElement(
+      "button",
+      {
+        type: "button",
+        id,
+        class: primary ? "pure-button af-primary" : "pure-button",
+        ...attrs,
+      },
+      text.createText(label),
+    );
+  const select = (
+    id: string,
+    options: Array<readonly [string, string]>,
+    attrs: Record<string, string> = {},
+  ) => {
+    const control = new DOMInput(id, {}, attrs);
+    dom.collectStylesFrom(control);
+    return control.createSelect(
+      options.map(([label, value]) => fields.createOption(label, value)),
+    );
+  };
+  const input = (id: string, type: string, attrs: Record<string, string> = {}) => {
+    const control = new DOMInput(id, {}, attrs);
+    dom.collectStylesFrom(control);
+    return control.createInput(type);
+  };
+  const icon = (name: string) =>
+    dom.createElement("i", {
+      class: `fa-solid fa-${name}`,
+      "aria-hidden": "true",
+    });
+  const label = (caption: string, control: string) =>
+    dom.createElement("label", {}, text.createText(caption), control);
+
+  const nav = sem.createNav(
+    TABS.map(([id, name, caption]) =>
+      dom.createElement(
+        "button",
+        { type: "button", "data-page": id, "aria-current": "false" },
+        icon(name),
+        text.createText(caption),
+        dom.createElement(
+          "span",
+          id === "operations" ? { id: "af-op-count" } : {},
+        ),
+      ),
+    ),
+    {
+      disableDefaultClass: true,
+      customAttributes: { "aria-label": "FinOps navigation" },
+    },
+  );
+
+  const groupPopover = sem.createSection(
+    [
+      input("af-group-search", "search", {
+        "aria-label": "Search resource groups",
+        placeholder: "Search resource groups…",
+      }),
+      dom.createElement(
+        "div",
+        { class: "af-row" },
+        button("af-groups-all", "All accessible groups"),
+        button("af-groups-clear", "Clear selection"),
+      ),
+      dom.createElement("div", { id: "af-group-list" }),
+      sem.createFooter(
+        [
+          dom.createElement("span", { id: "af-group-count" }),
+          button("af-groups-cancel", "Cancel"),
+          button("af-groups-apply", "Apply", true),
+        ],
+        { disableDefaultClass: true },
+      ),
+    ],
+    {
+      disableDefaultClass: true,
+      customAttributes: {
+        hidden: "hidden",
+        "aria-label": "Choose resource groups",
+      },
+    },
+    "af-group-popover",
+  );
+
+  const scope = sem.createSection(
+    [
+      label(
+        "Tenant",
+        select("af-tenant", [], { "aria-label": "Tenant" }),
+      ),
+      label(
+        "Subscription",
+        select("af-subscription", [], { "aria-label": "Subscription" }),
+      ),
+      dom.createElement(
+        "div",
+        { class: "af-group-picker" },
+        button("af-groups-button", "All accessible groups", false, {
+          "aria-expanded": "false",
+          "aria-controls": "af-group-popover",
+        }),
+        groupPopover,
+      ),
+      label(
+        "Period",
+        select("af-period", [
+          ["Last 30 days", "30"],
+          ["Last 7 days", "7"],
+          ["Month to date", "mtd"],
+          ["Custom", "custom"],
+        ]),
+      ),
+      label(
+        "Cost basis",
+        select("af-basis", [
+          ["Actual", "ActualCost"],
+          ["Amortized", "AmortizedCost"],
+        ]),
+      ),
+      label("Saved view", select("af-view", [["Current view", ""]])),
+      button("af-save-view", "Save view"),
+      dom.createElement(
+        "div",
+        { id: "af-custom-dates", class: "af-row", hidden: "hidden" },
+        label("From", input("af-from", "date")),
+        label("Through", input("af-to", "date")),
+        button("af-dates-apply", "Apply dates"),
+      ),
+    ],
+    {
+      classes: ["af-scope"],
+      disableDefaultClass: true,
+      customAttributes: { "aria-label": "Global Azure scope" },
+    },
+  );
+
+  const sidebar = sem.createAside(
+    [
+      sem.createHeader(
+        [
+          dom.createElement(
+            "span",
+            { class: "af-azure", "aria-hidden": "true" },
+            "A",
+          ),
+          dom.createElement(
+            "div",
+            {},
+            text.createStrongText("Azure FinOps"),
+            text.createSpanText("& Resource Manager"),
+          ),
+        ],
+        { classes: ["af-brand"], disableDefaultClass: true },
+      ),
+      text.createSpanText("DEMO", { classes: ["af-badge"] }, "af-mode-badge"),
+      nav,
+      sem.createFooter(
+        [
+          dom.createElement("span", { class: "af-dot" }),
+          text.createStrongText("Initializing…", {}, "af-connection"),
+          text.createPText("CLI profile not checked", {}, "af-identity"),
+          text.createSmallText("CLI only · credentials stay in Azure CLI"),
+        ],
+        { disableDefaultClass: true },
+      ),
+    ],
+    { classes: ["af-sidebar"], disableDefaultClass: true },
+  );
+
+  const workspace = sem.createSection(
+    [
+      sem.createHeader(
+        [
+          dom.createElement(
+            "div",
+            {},
+            text.createSpanText("AZURE CLOUD OPERATIONS", {
+              classes: ["af-eyebrow"],
+            }),
+            text.createHText(1, "Restoring view…", {}, "af-title"),
+          ),
+          dom.createElement(
+            "div",
+            { class: "af-row" },
+            button("af-refresh", "↻ Refresh"),
+            text.createSmallText("Loading…", {}, "af-freshness"),
+          ),
+        ],
+        { classes: ["af-heading"], disableDefaultClass: true },
+      ),
+      scope,
+      createInlineAlert(dom, {
+        id: "af-message",
+        variant: "info",
+        message: "Loading scoped Azure data…",
+      }),
+      dom.createElement(
+        "div",
+        { id: "af-progress", role: "status", hidden: "hidden" },
+        text.createText("Loading… "),
+        dom.createElement("span", { id: "af-progress-detail" }),
+        button("af-stop-loading", "Stop local loading"),
+      ),
+      dom.createElement("div", { id: "af-context", class: "af-muted" }),
+      sem.createSection([], {
+        classes: ["af-cards"],
+        disableDefaultClass: true,
+        customAttributes: { "aria-label": "Cost and resource summary" },
+      }, "af-cards"),
+      sem.createSection([], { disableDefaultClass: true }, "af-main"),
+      sem.createFooter(
+        [
+          dom.createElement(
+            "div",
+            {},
+            icon("clipboard-list"),
+            text.createStrongText("Action plan"),
+            text.createSpanText(
+              "0 proposed actions",
+              {},
+              "af-plan-count",
+            ),
+            text.createSmallText("Adding an action never executes it"),
+          ),
+          button("af-review", "Review plan →", true),
+        ],
+        { classes: ["af-plan-bar"], disableDefaultClass: true },
+        "af-plan-bar",
+      ),
+    ],
+    { classes: ["af-workspace"], disableDefaultClass: true },
+  );
+
+  const reviewDialog = dom.createElement(
+    "dialog",
+    { id: "af-review-dialog", "aria-labelledby": "af-review-title" },
+    sem.createHeader(
+      [
+        text.createHText(2, "Review action plan", {}, "af-review-title"),
+        button("af-review-close", "Close"),
+      ],
+      { classes: ["af-row", "af-between"], disableDefaultClass: true },
+    ),
+    dom.createElement("div", { id: "af-review-content" }),
+  );
+  const viewDialog = dom.createElement(
+    "dialog",
+    { id: "af-view-dialog", "aria-labelledby": "af-view-title" },
+    text.createHText(2, "Save current view", {}, "af-view-title"),
+    label("View name", input("af-view-name", "text", { maxlength: "80" })),
+    dom.createElement(
+      "div",
+      { class: "af-row" },
+      button("af-view-cancel", "Cancel"),
+      button("af-view-confirm", "Save view", true),
+    ),
+  );
+
+  return dom.renderHTML(
+    sem.createMain(
+      [sidebar, workspace, reviewDialog, viewDialog],
+      { classes: [cls], disableDefaultClass: true },
+      "azure-finops",
+    ),
+  );
 }
+
 export function onLoad(): string {
   return `(()=>{const root=document.getElementById('azure-finops');if(!root)return;if(root.__afCleanup)return root.__afCleanup;if(window.__afFinOpsCleanup)window.__afFinOpsCleanup();const cleanup=(${mountFinOps.toString()})(root);root.__afCleanup=cleanup;window.__afFinOpsCleanup=cleanup;return cleanup;})();`;
 }

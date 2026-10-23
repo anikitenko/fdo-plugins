@@ -2223,6 +2223,73 @@ export function mountFinOps(root: HTMLElement) {
     draw();
     return wrap;
   }
+  function databricksGuide() {
+    const box = el("section", "", "af-guide af-stack");
+    const steps = el("ol", "", "af-steps");
+    for (const step of [
+      "Confirm the header says Demo profile, or switch to Live in Settings and refresh the scope.",
+      "Click Inspect service on the workspace row. The result opens under this list and the page moves to it.",
+      "Start at Read this first. The four counts are shutdown review, policy change, definition only, and in use.",
+      "Open a colored card and follow Possible cleanup steps. Those steps are Databricks instructions. This page does not run them.",
+      "In Visible service inventory, set Asset category to RAG index. The configuration line starts with Index endpoint.",
+      "In Usage signals, find metric DBUs. That quantity is not added to the Azure charge total at the bottom.",
+    ])
+      steps.append(el("li", step));
+    box.append(el("h3", "How to see the inspection"), steps);
+    return box;
+  }
+  function postureStrip(s: ServiceInspection) {
+    const row = el("div", "", "af-posture");
+    for (const [key, label] of [
+      ["Review shutdown", "Shutdown review"],
+      ["Change policy", "Policy change"],
+      ["Definition only", "Definition only"],
+      ["Keep; in use", "In use"],
+    ] as const) {
+      const card = el("article", "", "af-card");
+      const text = el("div");
+      text.append(
+        el("small", label),
+        el(
+          "strong",
+          String(s.candidates.filter((c) => c.disposition === key).length),
+        ),
+      );
+      card.append(text);
+      row.append(card);
+    }
+    return row;
+  }
+  function readThisFirst(s: ServiceInspection) {
+    const box = el("section", "", "af-guide af-stack");
+    const steps = el("ol", "", "af-steps");
+    const rag = s.assets.filter((a) => a.category === "RAG index");
+    const dbus = s.signals.filter(
+      (m) => m.metric === "DBUs" || m.metric === "Unattributed DBUs",
+    );
+    const definitions = s.candidates.filter(
+      (c) => c.disposition === "Definition only",
+    );
+    const endpoint = rag[0]?.configuration.match(/Index endpoint [^·]+/)?.[0];
+    for (const step of [
+      "Read the four counts, then the colored cards. Yellow is a shutdown review, blue is a policy change, gold is a definition you might delete in Databricks, and green is in use.",
+      rag.length
+        ? `${rag.length} RAG index${rag.length === 1 ? "" : "es"}. ${rag[0].name}${endpoint ? ` · ${endpoint.trim()}` : ""}. Filter Asset category to RAG index to see the rest.`
+        : "No RAG index was returned. If coverage for that list is unavailable, the count is unknown rather than zero.",
+      dbus.length
+        ? `${dbus.length} DBU signal${dbus.length === 1 ? "" : "s"}. Open Usage signals and find metric DBUs. Do not add that quantity to the Azure charge total.`
+        : "No DBU signal was returned. system.billing runs only for a numeric workspace id and a SQL warehouse that is already RUNNING.",
+      definitions.length
+        ? `${definitions.length} definition-only card${definitions.length === 1 ? "" : "s"}: ${definitions
+            .slice(0, 2)
+            .map((c) => c.title)
+            .join("; ")}. A job or pipeline card deletes a Databricks definition. It does not delete managed virtual machines.`
+        : "No definition-only card was returned. Those appear for a paused job with no runs in a completed window, or an IDLE pipeline whose latest update is at least 14 days old.",
+    ])
+      steps.append(el("li", step));
+    box.append(el("h3", "Read this first"), steps);
+    return box;
+  }
   function renderServices(kind: "databricks" | "foundry") {
     const host = $("af-main");
     host.replaceChildren();
@@ -2239,11 +2306,9 @@ export function mountFinOps(root: HTMLElement) {
           ? "Databricks cost & cleanup inspection"
           : "Foundry, OpenAI & Azure ML cost inspection",
       ),
-      el(
+      kind === "databricks" ? databricksGuide() : el(
         "p",
-        kind === "databricks"
-          ? "Inspect workspace compute, SQL history, jobs, pipelines, serving and vector endpoints, plus managed infrastructure. Usage comes from returned metadata, not from a warehouse query. Cleanup steps are Databricks instructions. Managed infrastructure must be cleaned up through Databricks."
-          : "Inspect modern Foundry accounts/projects, Azure OpenAI accounts and classic Azure ML hubs/workspaces. Resource kind is shown; shared account charges are not invented as per-project or per-deployment totals.",
+        "Inspect modern Foundry accounts/projects, Azure OpenAI accounts and classic Azure ML hubs/workspaces. Resource kind is shown; shared account charges are not invented as per-project or per-deployment totals.",
         "af-callout",
       ),
       search,
@@ -2291,7 +2356,9 @@ export function mountFinOps(root: HTMLElement) {
                 servicePending = "";
                 if (page === kind) renderServices(kind);
                 message(
-                  "Inspection complete. Review coverage, dependencies and workload ownership before cleanup.",
+                  kind === "databricks"
+                    ? "Inspection complete. The page moved to Read this first, above the cleanup cards."
+                    : "Inspection complete. Review coverage, dependencies and workload ownership before cleanup.",
                 );
               } catch (e) {
                 if (ticket === generation && seq === serviceSequence) {
@@ -2329,20 +2396,17 @@ export function mountFinOps(root: HTMLElement) {
     const s = serviceData;
     if (!s || s.kind !== kind) return;
     const detail = el("section", "", "af-panel af-stack af-service-detail");
-    detail.append(
-      el("h2", s.target.name),
-      el(
-        "code",
-        `Tenant ${s.target.tenantId} · Subscription ${s.target.subscriptionId} · ${s.target.id}`,
-      ),
-      el(
-        "small",
-        `${s.from} → ${s.to} · ${s.basis} · observed ${s.observedAt} · ${settings.mode.toUpperCase()}`,
-      ),
+    detail.id = "af-service-detail";
+    const factsBlock = el("div", "", "af-stack");
+    factsBlock.append(
+      el("h3", "Facts"),
       table(
         ["Fact", "Value", "Source"],
         s.facts.map((f) => [f.name, f.value, f.source]),
       ),
+    );
+    const coverageBlock = el("div", "", "af-stack");
+    coverageBlock.append(
       el("h3", "Coverage & permissions"),
       table(
         ["Surface", "Coverage", "Explanation"],
@@ -2352,15 +2416,28 @@ export function mountFinOps(root: HTMLElement) {
           c.explanation,
         ]),
       ),
+    );
+    const inventoryBlock = el("div", "", "af-stack");
+    inventoryBlock.append(
       el("h3", "Visible service inventory"),
+      ...(s.kind === "databricks"
+        ? [
+            el(
+              "p",
+              "Use Asset category. RAG index rows name the index, and the configuration starts with Index endpoint. Job and Pipeline rows state when compute bills.",
+            ),
+          ]
+        : []),
       serviceAssetTable(s),
+    );
+    const signalBlock = el("div", "", "af-stack");
+    signalBlock.append(
       el("h3", "Usage signals & observation windows"),
       ...(s.kind === "databricks"
         ? [
             el(
               "p",
-              "Usage rows count returned SQL-history queries, cluster activity-event samples, job runs, pipeline updates, point-in-time session or pool snapshots, and system.billing DBU quantities when that read completes. Job clusters bill during a run; an all-purpose cluster can bill between runs; a pipeline bills during an update. A paused job or an IDLE pipeline can be a definition review. An unpaused job or a RUNNING pipeline stays in use. Each DBU row is assigned once. List prices are not the Azure invoice and are not added to managed-group charges. A missing collection is unknown, not zero. Cleanup steps are instructions for the Databricks UI; this inspection does not run them or delete managed infrastructure.",
-              "af-callout",
+              "Look for metric DBUs, Indexed rows, and Job runs started in window. A DBU figure is not added to the Azure charge total below. A missing collection is unknown, not zero.",
             ),
           ]
         : []),
@@ -2380,21 +2457,19 @@ export function mountFinOps(root: HTMLElement) {
           `${m.from} → ${m.to} · ${m.source}`,
         ]),
       ),
-      el("h3", "Cleanup review candidates"),
     );
-    if (s.candidates.some((c) => c.disposition)) {
-      const tally = (name: string) =>
-        s.candidates.filter((c) => c.disposition === name).length;
-      detail.append(
+    const candidateIntro = el("div", "", "af-stack");
+    candidateIntro.append(el("h3", "Cleanup review candidates"));
+    if (s.candidates.some((c) => c.disposition))
+      candidateIntro.append(
+        postureStrip(s),
         el(
           "p",
-          `${tally("Review shutdown")} shutdown reviews · ${tally("Change policy")} policy changes · ${tally("Definition only")} definition-only · ${tally("Keep; in use")} in use. Shutdown reviews are not deletion approval. In-use cards stay up; change the policy instead. No savings figure is estimated.`,
-          "af-callout",
+          "Shutdown review is not deletion approval. In-use cards stay up. No savings figure is estimated. Open a colored card and follow Possible cleanup steps. Nothing on a card runs from this page.",
         ),
       );
-    }
     if (!s.candidates.length)
-      detail.append(
+      candidateIntro.append(
         el(
           "p",
           "No candidates returned. Check usage and discovery coverage; absence does not prove no optimization opportunities.",
@@ -2420,7 +2495,21 @@ export function mountFinOps(root: HTMLElement) {
         candidatePage * 25,
         candidatePage * 25 + 25,
       )) {
-        const card = el("article", "", "af-panel af-stack");
+        const card = el(
+          "article",
+          "",
+          `af-panel af-stack af-candidate${
+            c.disposition === "Review shutdown"
+              ? " af-shutdown"
+              : c.disposition === "Change policy"
+                ? " af-policy"
+                : c.disposition === "Definition only"
+                  ? " af-definition"
+                  : c.disposition === "Keep; in use"
+                    ? " af-keep"
+                    : ""
+          }`,
+        );
         card.append(
           el("h4", c.title),
           el("code", c.assetId),
@@ -2432,7 +2521,7 @@ export function mountFinOps(root: HTMLElement) {
                     ? "af-success"
                     : c.disposition === "Review shutdown"
                       ? "af-warning"
-                      : "",
+                      : "af-definition",
                 ),
               ]
             : []),
@@ -2474,7 +2563,20 @@ export function mountFinOps(root: HTMLElement) {
       );
     };
     drawCandidates();
-    detail.append(candidates, candidatePages);
+    const candidateBlock = el("div", "", "af-stack");
+    candidateBlock.append(candidateIntro, candidates, candidatePages);
+    detail.append(
+      el("h2", s.target.name),
+      el(
+        "code",
+        `Tenant ${s.target.tenantId} · Subscription ${s.target.subscriptionId} · ${s.target.id}`,
+      ),
+      el(
+        "small",
+        `${s.from} → ${s.to} · ${s.basis} · observed ${s.observedAt} · ${settings.mode.toUpperCase()}`,
+      ),
+      ...(s.kind === "databricks" ? [readThisFirst(s), candidateBlock, inventoryBlock, signalBlock, coverageBlock, factsBlock] : [factsBlock, coverageBlock, inventoryBlock, signalBlock, candidateBlock]),
+    );
     const charges = snapshot!.costs.filter(
       (c) =>
         c.resourceId &&
@@ -2545,6 +2647,13 @@ export function mountFinOps(root: HTMLElement) {
       ),
     );
     host.append(detail);
+    if (typeof detail.scrollIntoView === "function") {
+      try {
+        detail.scrollIntoView({ block: "start" });
+      } catch {
+        /* The host viewport may not implement scrolling. */
+      }
+    }
   }
   function renderFindings() {
     const host = $("af-main");

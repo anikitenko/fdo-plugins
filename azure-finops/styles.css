@@ -140,6 +140,33 @@
 .shell .af-steps li + li {
   margin-top: 6px;
 }
+.shell .af-guide {
+  border: 1px solid var(--af-line);
+  border-radius: 7px;
+  padding: 4px 16px 12px;
+}
+.shell .af-posture {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.shell .af-candidate.af-shutdown {
+  border-color: #846122;
+}
+.shell .af-candidate.af-policy {
+  border-color: #248bc2;
+}
+.shell .af-candidate.af-definition {
+  border-color: #a97525;
+}
+.shell .af-candidate.af-keep {
+  border-color: #3a9c56;
+}
+.shell .af-definition {
+  color: #f0c471;
+  border-color: #a97525;
+  background: #72501722;
+}
 .shell .af-sidebar {
   border-right: 1px solid var(--af-line);
   padding: 22px 14px;
@@ -678,7 +705,8 @@
     padding: 12px;
   }
   .shell .af-cards,
-  .shell .af-grid {
+  .shell .af-grid,
+  .shell .af-posture {
     grid-template-columns: 1fr 1fr;
   }
   .shell .af-scope {
