@@ -102,16 +102,61 @@ export function demoService(
           "Demo job configuration; absence of runs is not evidence of no usage",
       },
     ];
+    s.signals = [
+      {
+        assetId: "warehouse-demo",
+        metric: "SQL history queries",
+        value: 12,
+        unit: "queries",
+        samples: 1,
+        expected: 1,
+        from: scope.from,
+        to: scope.to,
+        source:
+          "DEMO retained query-history count. 1/1 means the fixture list completed. Not a live warehouse query and not a DBU total.",
+      },
+      {
+        assetId: "cluster-demo",
+        metric: "DBUs",
+        value: 18.5,
+        unit: "DBU",
+        samples: 1,
+        expected: 1,
+        from: scope.from,
+        to: scope.to,
+        source:
+          "DEMO system.billing.usage quantity assigned once to this cluster. Not a live statement, not the Azure invoice, and not added to the managed-group charges.",
+      },
+      {
+        assetId: "cluster-demo",
+        metric: "Hours since cluster last activity",
+        value: 30,
+        unit: "hours",
+        samples: 1,
+        expected: 1,
+        from: scope.from,
+        to: scope.to,
+        source:
+          "DEMO last_activity_time. Not creation time, and not proof the cluster is idle.",
+      },
+    ];
     s.candidates = [
       {
         assetId: "cluster-demo",
         title: "Cluster: automatic shutdown disabled",
         evidence:
-          "Explicit auto-termination=0. It can continue consuming compute while running.",
+          "Explicit auto-termination=0. It can continue consuming compute while running. The fixture job nightly-etl references this cluster, so it is not an unreferenced idle cluster.",
         missing: ["Active notebooks, streaming and scheduled workloads."],
         suggested:
           "Review enabling automatic termination with the owner in Databricks. Do not directly delete managed Azure resources.",
+        steps: [
+          "Open the cluster in Databricks Compute.",
+          "Move nightly-etl to a job cluster before changing this cluster, if the owner agrees. The job reference means termination can stop scheduled work.",
+          "Set Terminate after to a non-zero value such as 60 minutes. Do not terminate the cluster on this fixture alone.",
+          "Do not delete the managed resource group or its virtual machines and disks from Azure.",
+        ],
         confidence: "Configuration verified in demo; inactivity unknown",
+        disposition: "Keep; in use",
       },
       {
         assetId: "pool-demo",
@@ -122,7 +167,14 @@ export function demoService(
         ],
         suggested:
           "Review minimum idle allocation through Databricks after workload approval.",
+        steps: [
+          "Open Compute → Instance pools → etl-warm-pool.",
+          "Confirm no scheduled job needs the warm capacity. This snapshot shows used 0, which is not a history of idle time.",
+          "Set Minimum idle instances to 0 so Databricks can release idle VMs.",
+          "Do not delete those virtual machines from the managed resource group.",
+        ],
         confidence: "Snapshot only; not historical idle proof",
+        disposition: "Review shutdown",
       },
     ];
     s.relatedCosts = [
@@ -145,7 +197,7 @@ export function demoService(
       },
     ];
     s.limitations.push(
-      "Per-cluster DBUs, full SQL/query history and system.billing tables are not read. Querying billing tables may start paid compute.",
+      "Demo DBU quantities illustrate system.billing assignment. They are not a live statement, not the Azure invoice, and not added to the managed-group charges. SQL history counts are illustrative.",
     );
   } else {
     const isML = r.type.toLowerCase().includes("machinelearning");

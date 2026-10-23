@@ -281,6 +281,12 @@ export type ServiceInspection = {
     evidence: string;
     missing: string[];
     suggested: string;
+    steps?: string[];
+    disposition?:
+      | "Review shutdown"
+      | "Change policy"
+      | "Definition only"
+      | "Keep; in use";
     confidence: string;
   }[];
   relatedCosts: { scopeId: string; explanation: string; costs: Charge[] }[];

@@ -2242,7 +2242,7 @@ export function mountFinOps(root: HTMLElement) {
       el(
         "p",
         kind === "databricks"
-          ? "Inspect workspace compute controls, jobs and managed infrastructure. Workspace DBU charges and managed-group infrastructure are separate cost layers. Managed infrastructure must be cleaned up through Databricks."
+          ? "Inspect workspace compute, SQL history, jobs, pipelines, serving and vector endpoints, plus managed infrastructure. Usage comes from returned metadata, not from a warehouse query. Cleanup steps are Databricks instructions. Managed infrastructure must be cleaned up through Databricks."
           : "Inspect modern Foundry accounts/projects, Azure OpenAI accounts and classic Azure ML hubs/workspaces. Resource kind is shown; shared account charges are not invented as per-project or per-deployment totals.",
         "af-callout",
       ),
@@ -2355,6 +2355,15 @@ export function mountFinOps(root: HTMLElement) {
       el("h3", "Visible service inventory"),
       serviceAssetTable(s),
       el("h3", "Usage signals & observation windows"),
+      ...(s.kind === "databricks"
+        ? [
+            el(
+              "p",
+              "Usage rows count returned SQL-history queries, cluster activity-event samples, job runs, point-in-time session or pool snapshots, and system.billing DBU quantities when that read completes. Each DBU row is assigned once. List prices are not the Azure invoice and are not added to managed-group charges. A missing collection is unknown, not zero. Cleanup steps are instructions for the Databricks UI; this inspection does not run them or delete managed infrastructure.",
+              "af-callout",
+            ),
+          ]
+        : []),
       table(
         [
           "Exact asset",
@@ -2373,6 +2382,17 @@ export function mountFinOps(root: HTMLElement) {
       ),
       el("h3", "Cleanup review candidates"),
     );
+    if (s.candidates.some((c) => c.disposition)) {
+      const tally = (name: string) =>
+        s.candidates.filter((c) => c.disposition === name).length;
+      detail.append(
+        el(
+          "p",
+          `${tally("Review shutdown")} shutdown reviews · ${tally("Change policy")} policy changes · ${tally("Definition only")} definition-only · ${tally("Keep; in use")} in use. Shutdown reviews are not deletion approval. In-use cards stay up; change the policy instead. No savings figure is estimated.`,
+          "af-callout",
+        ),
+      );
+    }
     if (!s.candidates.length)
       detail.append(
         el(
@@ -2404,10 +2424,29 @@ export function mountFinOps(root: HTMLElement) {
         card.append(
           el("h4", c.title),
           el("code", c.assetId),
+          ...(c.disposition
+            ? [
+                badge(
+                  c.disposition,
+                  c.disposition === "Keep; in use"
+                    ? "af-success"
+                    : c.disposition === "Review shutdown"
+                      ? "af-warning"
+                      : "",
+                ),
+              ]
+            : []),
           badge(c.confidence),
           el("p", c.evidence),
           el("small", `Missing signals: ${c.missing.join(" · ")}`),
           el("p", c.suggested),
+        );
+        if (c.steps?.length) {
+          const steps = el("ol", "", "af-steps");
+          for (const step of c.steps) steps.append(el("li", step));
+          card.append(el("p", "Possible cleanup steps"), steps);
+        }
+        card.append(
           el(
             "small",
             "Savings not estimated. This is a review candidate, not permission or evidence that deletion is safe.",
@@ -3177,7 +3216,7 @@ export function mountFinOps(root: HTMLElement) {
       "Save the scope, then grant this plugin system.process.exec and system.process.scope.azure-finops in its capability settings. In Manage Plugins → Capabilities, enable Storage (storage), expand it, and enable Persistent plugin JSON storage (storage.json). The parent toggle alone is insufficient. Reload the plugin after changing grants; these store plans, views and operation records.",
       "In your own Terminal run az login --tenant YOUR_TENANT_ID. If Azure requests a browser, device code, MFA or Conditional Access, complete it there. The plugin never executes login, logout, account set or account get-access-token.",
       "Set the same scope ID and executable above, Save provider settings, select Live, and Check CLI & sign-in. Azure RBAC still determines access to costs, inventory and management.",
-      "Databricks inspection uses the same az executable: allow GET only to each exact ARM-reported adb-<workspace-id>.<shard>.azuredatabricks.net host for clusters/list, sql/warehouses, instance-pools/list, jobs/list and jobs/runs/list when host URL restrictions are enabled. az rest acquires its Entra audience internally. Workspace object permissions and network access are required; no PAT, login automation, admin auto-provisioning or workload query is used.",
+      "Databricks inspection uses the same az executable on each exact ARM-reported adb-<workspace-id>.<shard>.azuredatabricks.net host. Allow GET for /api/2.1/clusters/list, /api/2.0/clusters/events, /api/2.0/sql/warehouses, /api/2.0/sql/warehouses/<16-character warehouse id>, /api/2.0/sql/history/queries, /api/2.0/instance-pools/list, /api/2.2/jobs/list, /api/2.2/jobs/runs/list, /api/2.0/pipelines, /api/2.0/serving-endpoints, /api/2.0/vector-search/endpoints and /api/2.0/sql/statements/<statement id>/result/chunks/<index>. Allow one POST to /api/2.0/sql/statements, and POST to /api/2.0/sql/statements/<statement id>/cancel only to stop the plugin's own unfinished statement. Activity events are read for at most 20 clusters. The only SQL is a fixed system.billing aggregate, sent only after a warehouse is rechecked as RUNNING, with tags, identity and notebook ids omitted. External result links are not followed. az rest acquires its Entra audience internally. No PAT, login automation, admin auto-provisioning or warehouse start is used.",
     ])
       steps.append(el("li", text));
     panel.append(
@@ -3226,7 +3265,7 @@ export function mountFinOps(root: HTMLElement) {
       ),
       el(
         "p",
-        "This scope can perform writes and deletes through the approved Azure CLI identity. A first-argument allowlist is coarse: where supported, restrict ARM calls to management.azure.com and documented paths; additionally allow GET only to each ARM-reported adb-<workspace-id>.<shard>.azuredatabricks.net host for the five documented inspection collections. The plugin builds fixed requests, but host confirmation and Azure RBAC remain essential.",
+        "This scope can perform writes and deletes through the approved Azure CLI identity. A first-argument allowlist is coarse: where supported, restrict ARM calls to management.azure.com and documented paths; additionally allow GET only to each ARM-reported adb-<workspace-id>.<shard>.azuredatabricks.net host for the documented inspection paths, including cluster events and SQL history. The plugin builds fixed requests, but host confirmation and Azure RBAC remain essential.",
         "af-callout",
       ),
     );
@@ -3256,10 +3295,10 @@ export function mountFinOps(root: HTMLElement) {
       panel.append(a);
     }
     panel.append(
-      el("h3", "Scaffold coverage"),
+      el("h3", "Operational coverage"),
       el(
         "p",
-        "Databricks: read-only clusters/warehouses/pools/jobs/runs and managed-group billing. Foundry: ARM projects, model deployments, classic compute/endpoints and supported Monitor signals. Databricks requires GET-only access to each ARM-reported adb workspace host through az rest with its Entra audience; all service cleanup is handed off to service controls. Live: scoped Azure forecasts, subscription anomaly-alert configuration and separate plugin statistical checks; inventory/costs/budgets/Advisor; deployment correlations, client/tool evidence and permission-aware creator name lookup; explicit fleet CPU/memory/network scans; inbound/outbound ARM and Recovery Services references; guarded same-family VM resize while deallocated; observed pre/post spending measurement. Azure anomaly records open in subscription Cost Analysis. Every mutation is dangerous and requires typed target confirmation. No general rollback or exhaustive external dependency claim.",
+        "Databricks: read-only clusters, activity events, warehouses, SQL history, pools, jobs, runs, pipelines, serving endpoints, vector endpoints, system.billing DBU attribution on an already-running warehouse, and separate managed-group billing. Cleanup steps are instructions only. Foundry: ARM projects, model deployments, classic compute/endpoints and supported Monitor signals. Databricks uses az rest against each ARM-reported adb workspace host; the only POST is the fixed billing statement and cancellation of that statement. All service cleanup is handed off to service controls. Live: scoped Azure forecasts, subscription anomaly-alert configuration and separate plugin statistical checks; inventory/costs/budgets/Advisor; deployment correlations, client/tool evidence and permission-aware creator name lookup; explicit fleet CPU/memory/network scans; inbound/outbound ARM and Recovery Services references; guarded same-family VM resize while deallocated; observed pre/post spending measurement. Azure anomaly records open in subscription Cost Analysis. Every mutation is dangerous and requires typed target confirmation. No general rollback or exhaustive external dependency claim.",
       ),
     );
     host.append(panel);

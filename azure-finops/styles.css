@@ -133,6 +133,13 @@
   flex-direction: column;
   gap: 14px;
 }
+.shell .af-steps {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+.shell .af-steps li + li {
+  margin-top: 6px;
+}
 .shell .af-sidebar {
   border-right: 1px solid var(--af-line);
   padding: 22px 14px;
