@@ -310,6 +310,13 @@ const DB_ROUTES = {
     category: "Vector search endpoint",
     inventory: true,
   },
+  indexes: {
+    path: "/api/2.0/vector-search/indexes",
+    query:
+      "{items:vector_indexes[].{name:name,endpoint:endpoint_name,type:index_type,pipeline:delta_sync_index_spec.pipeline_type,source:delta_sync_index_spec.source_table,ready:status.ready,rows:status.indexed_row_count,state:status.detailed_state,embed:delta_sync_index_spec.embedding_source_columns[].embedding_model_endpoint_name},next:next_page_token}",
+    category: "RAG index",
+    inventory: true,
+  },
 } as const satisfies Record<string, DbRoute>;
 type DbKey = keyof typeof DB_ROUTES;
 const EPHEMERAL = new Set(["JOB", "PIPELINE", "PIPELINE_MAINTENANCE"]);
@@ -336,6 +343,13 @@ const strings = (v: unknown) =>
   Array.isArray(v)
     ? [...new Set(v.filter((item) => typeof item === "string" && item))]
     : [];
+const plain = (v: unknown, max = 300) =>
+  typeof v === "string" &&
+  v.length > 0 &&
+  v.length <= max &&
+  !/[\u0000-\u001f\u007f]/.test(v)
+    ? v
+    : null;
 const finite = (v: unknown) =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 const hoursSince = (ms: number | null) => {
@@ -373,6 +387,10 @@ const brief = (v: unknown) =>
         .join(", ") || "none returned"
     : value(v);
 function assetId(key: DbKey, row: any): string | null {
+  if (key === "indexes") {
+    const name = plain(row.name, 300);
+    return name ? `index:${name}` : null;
+  }
   if (key === "serving" || key === "vectors") {
     if (
       typeof row.name !== "string" ||
@@ -668,7 +686,7 @@ async function databricks(
     "Cluster lists are retained visible objects, not a complete historical inventory. Job and pipeline clusters are not manual cleanup targets. Runs that started before the selected window can still be active, and task-level cluster references outside the projected fields stay unknown.",
     "SQL history is a control-plane list with statement text omitted. It does not start a warehouse and it is not a DBU total. A read that hits the 5,000-record cap is a lower bound: a warehouse missing from that prefix is not unused. Retention, dashboards, Genie and external BI can still be missing. Activity events are requested only when last activity is missing or older than 24 hours, for at most 20 clusters, and only as event type plus timestamp.",
     "system.billing.usage is read only when ARM exposes a numeric workspace id and a SQL warehouse is rechecked as RUNNING. The plugin does not call a start API. A warehouse that stops in the moment between that recheck and the statement can still auto-resume. The statement is a fixed aggregate of object ids, SKU, unit and DBU quantity; tags, identity and notebook ids are not selected. It is cancelled if it exceeds 50 seconds. External result links are not followed. Each usage row is assigned to one object. List prices are Databricks' published Azure price, not the invoice, and are not added to managed-group or workspace Azure charges. Usage can lag. A partial billing read is a lower bound, not a zero.",
-    "Serving invocation counts and vector-search query volume are not collected. Pipeline continuous and serverless flags are not read, because the pipeline specification can contain configuration values. IDLE versus RUNNING and the latest returned update are the pipeline signals.",
+    "RAG indexes are listed with the vector-search endpoint that hosts each one. Index contents, schema JSON and status messages are not read. Indexed row count is not query volume. Serving invocation counts and vector-search query volume are not collected. A job is a deletion review only when its schedule is not unpaused, the run list completed, and that list has no runs in the window. An IDLE pipeline is a deletion review only when its newest returned update is at least 14 days old. Pipeline continuous and serverless flags are not read, because the pipeline specification can contain configuration values. Deleting either definition is a Databricks action; it does not delete managed virtual machines, and a pipeline deletion can still drop target tables.",
     "Databricks managed infrastructure is service-owned. Cleanup steps are instructions for Databricks controls. Do not directly delete its VMs, disks or the managed group.",
   );
 }
@@ -682,6 +700,13 @@ const UI_PATH: Record<DbKey, (row: any, id: string) => string> = {
   pipelines: (_row, id) => `pipelines/${id}`,
   serving: (row) => `ml/endpoints/${encodeURIComponent(String(row.name))}`,
   vectors: (row) => `vector-search/${encodeURIComponent(String(row.name))}`,
+  indexes: (row) => {
+    const endpoint = plain(row.endpoint, 200),
+      name = plain(row.name, 300);
+    return endpoint && name
+      ? `vector-search/endpoints/${encodeURIComponent(endpoint)}/indexes/${encodeURIComponent(name)}`
+      : "vector-search";
+  },
 };
 function pushDatabricksAsset(
   s: ServiceInspection,
@@ -711,7 +736,9 @@ function pushDatabricksAsset(
                   ? `Creator ${value(row.creator)} · run as ${value(row.runAs)} · reported cluster ${value(row.cluster)} · latest returned update ${timestamp(row.updated)} ${value(row.updateState)}`
                   : key === "serving"
                     ? `Scale-to-zero ${brief(row.scales)} · sizes ${brief(row.sizes)} · min concurrency ${brief(row.minC)} · max provisioned throughput ${brief(row.maxT)} · updated ${timestamp(row.updated)}`
-                    : `Type ${value(row.type)} · indexes ${value(row.indexes)} · creator ${value(row.creator)}`;
+                    : key === "indexes"
+                      ? `Index endpoint ${plain(row.endpoint, 200) ?? "unknown"} · type ${value(row.type)} · sync ${value(row.pipeline)} · source table ${plain(row.source, 200) ?? "unknown"} · ready ${value(row.ready)} · indexed rows ${value(row.rows)} · embedding model endpoint ${strings(row.embed).slice(0, 5).join(", ") || "none returned"}`
+                      : `Type ${value(row.type)} · indexes ${value(row.indexes)} · creator ${value(row.creator)}`;
   const linkId = encodeURIComponent(
     key === "serving" || key === "vectors" ? String(row.name) : id,
   );
@@ -729,7 +756,9 @@ function pushDatabricksAsset(
             ? "Databricks serving creation_timestamp"
             : key === "vectors"
               ? "Databricks vector-search creation_timestamp where returned"
-              : "Creation not exposed here; cluster last start and last activity are not creation",
+              : key === "indexes"
+                ? "Creation is not returned by the vector index list"
+                : "Creation not exposed here; cluster last start and last activity are not creation",
     },
     state: value(row.state),
     configuration: config.trim(),
@@ -1529,7 +1558,7 @@ function assessDatabricks(
   const count = (rows?: any[]) => (rows ? String(rows.length) : "unknown");
   s.facts.push({
     name: "Returned usage snapshot",
-    value: `clusters ${count(got.clusters)} · warehouses ${count(got.warehouses)} · pools ${count(got.pools)} · jobs ${count(got.jobs)} · runs ${count(got.runs)} · SQL history rows ${count(got.queries)} · pipelines ${count(got.pipelines)} · serving endpoints ${count(got.serving)} · vector endpoints ${count(got.vectors)}`,
+    value: `clusters ${count(got.clusters)} · warehouses ${count(got.warehouses)} · pools ${count(got.pools)} · jobs ${count(got.jobs)} · runs ${count(got.runs)} · SQL history rows ${count(got.queries)} · pipelines ${count(got.pipelines)} · serving endpoints ${count(got.serving)} · vector endpoints ${count(got.vectors)} · RAG indexes ${count(got.indexes)}`,
     source:
       "Returned record counts. Unknown means that collection failed and is not a zero. SQL history rows are not warehouse assets.",
   });
@@ -1928,11 +1957,36 @@ function assessDatabricks(
         disposition: "Change policy",
       });
     }
-  if (jobs && clusters)
+  if (jobs) {
+    const runsComplete =
+      !!runs && (runs as { complete?: boolean }).complete !== false;
     for (const job of jobs) {
       const id = assetId("jobs", job);
       if (!id) continue;
+      const controls = [job.paused, job.continuous, job.trigger];
+      const armed = controls.some((item) => item === "UNPAUSED");
+      const disarmed = controls.every((item) => item == null || item === "PAUSED");
       const runUse = runs ? runsByJob.get(id) ?? { count: 0, active: 0 } : null;
+      const warehouses = strings(job.warehouse);
+      const cost = [
+        typeof job.jobClusters === "number" && job.jobClusters > 0
+          ? `${job.jobClusters} job-cluster definition(s) bill only while a run is active`
+          : "",
+        jobClusterIds(job).length
+          ? "an all-purpose cluster named by this job can bill between runs"
+          : "",
+        warehouses.length
+          ? `SQL tasks bill warehouse ${warehouses.join(", ")}`
+          : "",
+      ].filter(Boolean);
+      annotate(
+        s,
+        "Job",
+        id,
+        cost.length
+          ? cost.join("; ")
+          : "No job cluster, all-purpose cluster, or SQL warehouse was returned, so the compute cost shape is unknown",
+      );
       if (runUse)
         signal(
           s,
@@ -1940,45 +1994,121 @@ function assessDatabricks(
           "Job runs started in window",
           runUse.count,
           "runs",
-          1,
-          1,
-          "1/1 means the run list completed. The value is the count of runs whose start time is inside the selected window. Earlier active runs can be missing.",
+          runsComplete ? 1 : runUse.count,
+          runsComplete ? 1 : runUse.count + 1,
+          runsComplete
+            ? "1/1 means the run list completed. The value is the count of runs whose start time is inside the selected window. Earlier active runs can be missing. Job-cluster DBUs accrue during those runs; an all-purpose cluster can accrue between runs."
+            : "The run list stopped early. This count is a lower bound, and a zero is not proof the job is unused.",
         );
-      const bound = jobClusterIds(job)
-        .map((clusterId) => clusterById.get(clusterId))
-        .filter(
-          (cluster) =>
-            cluster && !EPHEMERAL.has(String(cluster.source ?? "")),
+      const bound = clusters
+        ? jobClusterIds(job)
+            .map((clusterId) => clusterById.get(clusterId))
+            .filter(
+              (cluster) =>
+                cluster && !EPHEMERAL.has(String(cluster.source ?? "")),
+            )
+        : null;
+      if (bound?.length) {
+        const quiet =
+          disarmed && runsComplete && !!runUse && runUse.count === 0 && runUse.active === 0;
+        s.candidates.push({
+          assetId: id,
+          title: "Job uses an all-purpose cluster",
+          evidence: `Schedule ${value(job.paused)} ${typeof job.cron === "string" ? job.cron : ""}; continuous ${value(job.continuous)}; trigger ${value(job.trigger)}; existing clusters ${titled(bound.map((cluster) => ({ name: cluster.name, id: assetId("clusters", cluster) })))}. ${runUse ? `${runUse.count} runs started in the window (${runUse.active} active).` : "Run history was not collected."}${quiet ? " No runs started in the window and the job is not unpaused. Deleting the job does not by itself stop the all-purpose cluster." : ""}`,
+          missing: [
+            "Task-level clusters that were not returned in the projected existing-cluster fields.",
+            "Runs that started before the selected window.",
+            ...USAGE_GAPS,
+          ],
+          suggested:
+            "Review moving the job to a job cluster so compute stops when the run ends. The all-purpose cluster bills while it is running between tasks.",
+          steps: [
+            "Open Workflows and this job from the inventory link.",
+            `In each task that uses ${titled(bound.map((cluster) => ({ name: cluster.name, id: cluster.id })))}, switch compute to a job cluster after the owner confirms libraries and policies.`,
+            runUse?.active
+              ? "A returned run is still active. Change the compute setting for later runs rather than cancelling this one from here."
+              : "Leave the schedule unchanged until the owner agrees. Pausing the job stops future runs but does not stop an all-purpose cluster that other work uses.",
+            "This inspection does not edit the job. Do not delete the cluster until every job that names it has been moved.",
+          ],
+          confidence: "Verified binding; savings depend on the cluster actually stopping",
+          disposition: "Change policy",
+        });
+        continue;
+      }
+      if (!clusters) {
+        annotate(
+          s,
+          "Job",
+          id,
+          "cluster list failed, so an all-purpose binding is unknown and the job was not marked for deletion",
         );
-      if (!bound.length) continue;
+        continue;
+      }
+      if (armed || runUse?.active) {
+        annotate(
+          s,
+          "Job",
+          id,
+          armed
+            ? "schedule, continuous, or trigger is UNPAUSED, so this job was not marked for deletion"
+            : "a returned run is still active, so this job was not marked for deletion",
+        );
+        continue;
+      }
+      if (!disarmed || !runsComplete || !runUse || runUse.count > 0) {
+        annotate(
+          s,
+          "Job",
+          id,
+          !runs
+            ? "run history was not collected, so this job was not marked for deletion"
+            : !runsComplete
+              ? "the run list is a lower bound, so this job was not marked for deletion"
+              : "schedule state or returned runs do not support a deletion review",
+        );
+        continue;
+      }
+      const manual = controls.every((item) => item == null);
       s.candidates.push({
         assetId: id,
-        title: "Job uses an all-purpose cluster",
-        evidence: `Schedule ${value(job.paused)} ${typeof job.cron === "string" ? job.cron : ""}; continuous ${value(job.continuous)}; existing clusters ${titled(bound.map((cluster) => ({ name: cluster.name, id: assetId("clusters", cluster) })))}. ${runUse ? `${runUse.count} runs started in the window (${runUse.active} active).` : "Run history was not collected."}`,
+        title: manual
+          ? "Manual job has no runs in the window"
+          : "Paused job has no runs in the window",
+        evidence: `Schedule ${value(job.paused)}; continuous ${value(job.continuous)}; trigger ${value(job.trigger)}. The completed run list has no runs starting in the selected window and none still active. ${cost.join("; ") || "Compute cost shape was not returned."} Job-cluster compute is not billing between runs. This is not proof the job never ran before the window.`,
         missing: [
-          "Task-level clusters that were not returned in the projected existing-cluster fields.",
+          "Runs that started before the selected window, and ad-hoc runs that have not happened yet.",
+          "Notebooks, tables, and downstream jobs that depend on this definition.",
           ...USAGE_GAPS,
         ],
         suggested:
-          "Review moving the job to a job cluster so compute stops when the run ends. The all-purpose cluster bills while it is running between tasks.",
+          "Review deleting the job definition in Databricks if the owner agrees. This does not delete notebooks, tables, or managed virtual machines, and it does not stop a warehouse other work still uses.",
         steps: [
           "Open Workflows and this job from the inventory link.",
-          `In each task that uses ${titled(bound.map((cluster) => ({ name: cluster.name, id: cluster.id })))}, switch compute to a job cluster after the owner confirms libraries and policies.`,
-          runUse?.active
-            ? "A returned run is still active. Change the compute setting for later runs rather than cancelling this one from here."
-            : "Leave the schedule unchanged until the owner agrees. Pausing the job stops future runs but does not stop an all-purpose cluster that other work uses.",
-          "This inspection does not edit the job. Do not delete the cluster until every job that names it has been moved.",
+          "Confirm the schedule, continuous task, and trigger are not unpaused, and that no run is active.",
+          "A run that started before the selected window is not in this list. Ask the owner whether the job is still invoked manually.",
+          warehouses.length
+            ? `Deleting the job does not stop warehouse ${warehouses.join(", ")}. Other tasks may still use it.`
+            : "Job clusters for this definition bill only during a run. There is no running compute to stop from this card.",
+          "Delete the job definition in Databricks only after the owner agrees. Do not delete the managed resource group or its virtual machines.",
         ],
-        confidence: "Verified binding; savings depend on the cluster actually stopping",
-        disposition: "Change policy",
+        confidence:
+          "No returned runs in the completed window; the job is not unpaused",
+        disposition: "Definition only",
       });
     }
+  }
   if (got.pipelines)
     for (const row of got.pipelines) {
       const id = assetId("pipelines", row);
       if (!id) continue;
       const updated = finite(row.updated),
         updateHours = hoursSince(updated);
+      annotate(
+        s,
+        "Pipeline",
+        id,
+        "Compute bills during a pipeline update. Target tables and the storage location were not read. The reported cluster is Databricks-managed and is not an Azure deletion target.",
+      );
       if (updateHours != null)
         signal(
           s,
@@ -1988,15 +2118,51 @@ function assessDatabricks(
           "hours",
           1,
           1,
-          "latest_updates[0] from the pipeline list. The list order is the provider's newest returned update, not a full update history.",
+          "latest_updates[0] from the pipeline list. The list order is the provider's newest returned update, not a full update history. Pipeline DBUs accrue during updates, not while IDLE.",
         );
-      if (row.state === "RUNNING")
+      if (row.state === "RUNNING") {
         annotate(
           s,
           "Pipeline",
           id,
           "RUNNING pipelines are in use; do not delete their storage or cluster to save cost",
         );
+        continue;
+      }
+      const idleLong =
+        row.state === "IDLE" && updateHours != null && updateHours >= 14 * 24;
+      if (!idleLong) {
+        annotate(
+          s,
+          "Pipeline",
+          id,
+          row.state === "IDLE"
+            ? "IDLE, but the latest update is missing or newer than 14 days, so this pipeline was not marked for deletion"
+            : `state ${value(row.state)} is not IDLE, so this pipeline was not marked for deletion`,
+        );
+        continue;
+      }
+      s.candidates.push({
+        assetId: id,
+        title: "Idle pipeline definition has an old latest update",
+        evidence: `State is IDLE. The newest returned update was ${ageText(updated)}. Pipeline compute is not billing while IDLE. Target tables, continuous mode, and serverless settings were not read, so deletion can still drop data the pipeline owns.`,
+        missing: [
+          "Updates older than the single newest returned update, and a schedule that might start another update.",
+          "Whether the pipeline storage target should be kept after the definition is removed.",
+          ...USAGE_GAPS,
+        ],
+        suggested:
+          "Review deleting the pipeline definition in Databricks if the owner agrees. Do not delete its target tables, storage account, or managed virtual machines from this card.",
+        steps: [
+          "Open the pipeline from the inventory link in Delta Live Tables or Lakeflow.",
+          "Confirm the state is still IDLE and that the latest update shown here is the one the owner expects.",
+          "Deleting the pipeline can drop its target tables, depending on settings this inspection did not read. Confirm that outcome with the owner.",
+          "Delete the pipeline definition in Databricks only after that confirmation. Do not delete the storage account, managed resource group, or virtual machines from Azure.",
+        ],
+        confidence:
+          "IDLE with a latest update at least 14 days old; table impact unknown",
+        disposition: "Definition only",
+      });
     }
   if (got.serving)
     for (const row of got.serving) {
@@ -2031,43 +2197,114 @@ function assessDatabricks(
         disposition: "Change policy",
       });
     }
+  relateRagIndexes(s, got);
   if (got.vectors)
     for (const row of got.vectors) {
       const id = assetId("vectors", row);
       if (!id || row.type !== "STANDARD") continue;
-      const indexes = finite(row.indexes);
+      const reported = finite(row.indexes);
+      const indexRows = got.indexes as (any[] & { complete?: boolean }) | undefined;
+      const indexListComplete = !!indexRows && indexRows.complete !== false;
+      const names = (indexRows ?? [])
+        .filter((item) => item?.endpoint === row.name)
+        .map((item) => plain(item.name, 300))
+        .filter((item): item is string => !!item);
+      const noneNamed = indexListComplete && names.length === 0;
+      const disagreed = noneNamed && reported != null && reported > 0;
+      const empty = noneNamed && !disagreed && (reported === 0 || reported == null);
+      const named =
+        names.length === 0
+          ? "none named"
+          : names.length > 5
+            ? `${names.slice(0, 5).join(", ")}, and ${names.length - 5} more`
+            : names.join(", ");
       s.candidates.push({
         assetId: id,
-        title:
-          indexes === 0
-            ? "Standard vector endpoint has no returned indexes"
-            : "Standard vector endpoint keeps capacity allocated",
-        evidence: `Endpoint type STANDARD; status ${value(row.state)}; indexes ${value(row.indexes)}. STANDARD keeps compute allocated. STORAGE_OPTIMIZED is a different billing shape and is not flagged here.`,
+        title: empty
+          ? "Standard vector endpoint has no returned indexes"
+          : "Standard vector endpoint keeps capacity allocated",
+        evidence: `Endpoint type STANDARD; status ${value(row.state)}; endpoint-reported indexes ${value(row.indexes)}. RAG indexes named on this index endpoint: ${indexRows ? named : "unknown"}. STANDARD keeps compute allocated. STORAGE_OPTIMIZED is a different billing shape and is not flagged here.${disagreed ? " The endpoint count and the index list disagree, so this is not an empty endpoint." : ""}`,
         missing: [
-          "Query volume and which indexes are still queried.",
-          indexes == null ? "Index count was not returned." : "",
+          "Query volume. Indexed row count is not evidence that anyone queried the index.",
+          !indexRows
+            ? "The RAG index list failed, so index names for this endpoint are unknown."
+            : indexListComplete
+              ? ""
+              : "The RAG index list stopped early. An index missing from the prefix is not zero.",
+          reported == null ? "The endpoint did not return an index count." : "",
           ...USAGE_GAPS,
         ].filter(Boolean),
-        suggested:
-          indexes === 0
-            ? "Review deleting the endpoint in Vector Search after the owner confirms no index is about to be created. No query volume was collected."
-            : "Review whether STORAGE_OPTIMIZED fits the workload, or whether the endpoint is still required. Query volume was not collected.",
+        suggested: empty
+          ? "Review deleting the endpoint in Vector Search after the owner confirms no index is about to be created. No query volume was collected."
+          : "Review whether STORAGE_OPTIMIZED fits the workload, or whether the endpoint is still required. Query volume was not collected.",
         steps: [
           "Open Vector Search and this endpoint from the inventory link.",
-          indexes === 0
+          "The RAG index rows in this inspection name the index and this index endpoint. Open an index from its own inventory link before changing it.",
+          empty
             ? "Confirm no application is about to create an index. An endpoint with zero returned indexes may still be reserved capacity."
-            : `Confirm the ${indexes} returned indexes are still queried before changing the endpoint type or deleting it.`,
+            : disagreed
+              ? "The endpoint reported indexes that the index list did not name. Treat the index list as incomplete and do not delete the endpoint."
+              : names.length
+                ? `Confirm these RAG indexes are still queried: ${named}.`
+                : "Confirm the indexes on this endpoint before changing its type or deleting it.",
           "Change the endpoint type or delete the endpoint only in Databricks, and only with the index owner.",
           "Do not delete the workspace or its storage account to remove this endpoint.",
         ],
-        confidence:
-          indexes === 0
-            ? "Verified endpoint type; no indexes returned; query volume unknown"
-            : "Verified endpoint type; query volume unknown",
-        disposition: indexes === 0 ? "Review shutdown" : "Change policy",
+        confidence: empty
+          ? "Verified endpoint type; no indexes returned; query volume unknown"
+          : "Verified endpoint type; query volume unknown",
+        disposition: empty ? "Review shutdown" : "Change policy",
       });
     }
   sortCandidates(s);
+}
+function relateRagIndexes(
+  s: ServiceInspection,
+  got: Partial<Record<DbKey, any[]>>,
+) {
+  const indexes = got.indexes as (any[] & { complete?: boolean }) | undefined;
+  if (!indexes) return;
+  const complete = indexes.complete !== false;
+  const byEndpoint = new Map<string, string[]>();
+  for (const row of indexes) {
+    const name = plain(row.name, 300);
+    if (!name) continue;
+    const endpoint = plain(row.endpoint, 200);
+    const id = `index:${name}`;
+    if (endpoint) {
+      const names = byEndpoint.get(endpoint) ?? [];
+      names.push(name);
+      byEndpoint.set(endpoint, names);
+    }
+    const asset = s.assets.find((item) => item.id === id);
+    if (asset && endpoint && !s.assets.some((item) => item.id === `vector:${endpoint}`))
+      asset.configuration +=
+        " · This index endpoint was not in the returned endpoint list.";
+    if (asset && row.pipeline === "CONTINUOUS")
+      asset.configuration +=
+        " · CONTINUOUS sync keeps a pipeline running; this index is not idle.";
+    const rows = finite(row.rows);
+    if (rows != null)
+      signal(
+        s,
+        id,
+        "Indexed rows",
+        rows,
+        "rows",
+        complete ? 1 : 1,
+        complete ? 1 : 2,
+        "status.indexed_row_count on this RAG index. This is not query volume and not a DBU total. DBU charges for the index stay on its vector-search endpoint.",
+      );
+  }
+  for (const [endpoint, names] of byEndpoint) {
+    const shown = names.slice(0, 5).join(", ");
+    annotate(
+      s,
+      "Vector search endpoint",
+      `vector:${endpoint}`,
+      `RAG indexes ${shown}${names.length > 5 ? `, and ${names.length - 5} more` : ""}`,
+    );
+  }
 }
 function emptyQuery(): QueryUse {
   return { count: 0, active: 0, users: [], durationMs: 0, durationKnown: 0, last: null };

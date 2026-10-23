@@ -93,13 +93,52 @@ export function demoService(
         source: "Demo Databricks metadata",
       },
       {
+        id: "vector:docs-endpoint",
+        name: "docs-endpoint",
+        category: "Vector search endpoint",
+        state: "ONLINE",
+        configuration: "STANDARD · RAG indexes main.rag.policies",
+        source: "Demo Databricks vector-search endpoint",
+      },
+      {
+        id: "index:main.rag.policies",
+        name: "main.rag.policies",
+        category: "RAG index",
+        state: "ONLINE",
+        configuration:
+          "Index endpoint docs-endpoint · DELTA_SYNC · TRIGGERED · source table main.rag.policies_source · indexed rows 1200",
+        source:
+          "Demo Databricks vector-search index. Not live index contents.",
+      },
+      {
         id: "job-demo",
         name: "nightly-etl",
         category: "Job",
         state: "Unknown",
-        configuration: "Schedule UNPAUSED · existing cluster cluster-demo",
+        configuration:
+          "Schedule UNPAUSED · existing cluster cluster-demo · an all-purpose cluster can bill between runs",
         source:
           "Demo job configuration; absence of runs is not evidence of no usage",
+      },
+      {
+        id: "job-paused-demo",
+        name: "old-report",
+        category: "Job",
+        state: "PAUSED",
+        configuration:
+          "Schedule PAUSED · no demo runs in the window · job clusters bill only while a run is active",
+        source:
+          "Demo job. A paused definition is not an Azure deletion and does not prove the job never ran before the window.",
+      },
+      {
+        id: "pipeline-idle-demo",
+        name: "legacy-ingest",
+        category: "Pipeline",
+        state: "IDLE",
+        configuration:
+          "IDLE · latest demo update 20 days ago · compute bills during an update · target tables were not read",
+        source:
+          "Demo pipeline. IDLE is not permission to drop tables or managed virtual machines.",
       },
     ];
     s.signals = [
@@ -175,6 +214,40 @@ export function demoService(
         ],
         confidence: "Snapshot only; not historical idle proof",
         disposition: "Review shutdown",
+      },
+      {
+        assetId: "job-paused-demo",
+        title: "Paused job has no runs in the window",
+        evidence:
+          "Schedule PAUSED. The demo run list has no runs in the window. Job-cluster compute is not billing between runs.",
+        missing: ["Runs before the demo window, and notebooks that still depend on this job."],
+        suggested:
+          "Review deleting the job definition in Databricks if the owner agrees. This does not delete notebooks, tables, or managed virtual machines.",
+        steps: [
+          "Open Workflows and old-report.",
+          "Confirm the schedule is still paused and that no run is active.",
+          "Delete the job definition in Databricks only after the owner agrees.",
+          "Do not delete the managed resource group or its virtual machines.",
+        ],
+        confidence: "Demo fixture; not a live run history",
+        disposition: "Definition only",
+      },
+      {
+        assetId: "pipeline-idle-demo",
+        title: "Idle pipeline definition has an old latest update",
+        evidence:
+          "State is IDLE. The demo update is 20 days old. Pipeline compute is not billing while IDLE. Target tables were not read.",
+        missing: ["Whether the pipeline target tables should be kept."],
+        suggested:
+          "Review deleting the pipeline definition in Databricks if the owner agrees. Do not delete its tables or managed virtual machines from this card.",
+        steps: [
+          "Open legacy-ingest in Delta Live Tables or Lakeflow.",
+          "Confirm it is still IDLE.",
+          "Deleting the pipeline can drop its target tables. Confirm that with the owner.",
+          "Do not delete the storage account or managed virtual machines from Azure.",
+        ],
+        confidence: "Demo fixture; table impact unknown",
+        disposition: "Definition only",
       },
     ];
     s.relatedCosts = [

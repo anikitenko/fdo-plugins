@@ -132,6 +132,7 @@ test("Databricks inspection is CLI-only, paginated, separates managed costs and 
         "/api/2.0/pipelines",
         "/api/2.0/serving-endpoints",
         "/api/2.0/vector-search/endpoints",
+        "/api/2.0/vector-search/indexes",
       ].includes(url.pathname),
       url.pathname,
     );
@@ -199,7 +200,7 @@ test("workspace host, pagination and denied data-plane coverage cannot produce a
     s.coverage.filter(
       (c) => c.name.startsWith("Databricks ") && c.state === "Unavailable",
     ).length,
-    11,
+    12,
   );
   assert.ok(
     s.coverage.some(
@@ -299,6 +300,7 @@ test("Databricks usage distinguishes idle, referenced, job-owned and non-billing
             { name: "archive", type: "STORAGE_OPTIMIZED", state: "ONLINE", indexes: 4 },
           ],
         };
+      if (path.endsWith("/vector-search/indexes")) return { items: [] };
       throw new Error("Unexpected Databricks path " + path);
     },
     async () => [],
@@ -454,6 +456,155 @@ test("a capped SQL history stays a lower bound and a denied read does not keep t
   assert.match(explanation, /Access was denied/);
   assert.doesNotMatch(explanation, /secret-token-abc/);
 });
+test("paused jobs and idle pipelines can be definition reviews without deleting Azure resources", async () => {
+  const r = resourceFromAzure(rawDB, scope, now),
+    day = 86400000,
+    jobs = [
+      { id: 20, name: "old-report", paused: "PAUSED", jobClusters: 1 },
+      { id: 21, name: "nightly", paused: "UNPAUSED", jobClusters: 1 },
+      { id: 22, name: "shared", paused: "PAUSED", cluster: "c-shared", jobClusters: 0 },
+      { id: 23, name: "active", paused: "PAUSED", jobClusters: 1 },
+    ],
+    pipelines = [
+      { id: "idle-old", name: "legacy", state: "IDLE", updated: Date.now() - 20 * day },
+      { id: "hot", name: "ingest", state: "RUNNING", updated: Date.now() },
+      { id: "idle-new", name: "recent", state: "IDLE", updated: Date.now() - 2 * day },
+      { id: "idle-unknown", name: "undated", state: "IDLE" },
+    ];
+  const load = (runPage: () => any) =>
+    inspectService(
+      r,
+      rawDB,
+      scope,
+      async () => ({ value: [] }),
+      async (args) => {
+        const path = new URL(args[args.indexOf("--url") + 1]).pathname;
+        if (path.endsWith("/clusters/list"))
+          return { items: [{ id: "c-shared", name: "shared", state: "RUNNING", source: "UI", auto: 30 }] };
+        if (path.endsWith("/jobs/list")) return { items: jobs };
+        if (path.endsWith("/jobs/runs/list")) return runPage();
+        if (path.endsWith("/pipelines")) return { items: pipelines };
+        return { items: [] };
+      },
+      async () => [],
+    );
+  const s = (await load(() => ({
+    items: [{ id: 1, job: 23, state: "RUNNING", start: Date.now() }],
+  })))!;
+  const card = (id: string) => s.candidates.find((c) => c.assetId === id);
+  const paused = card("20")!;
+  assert.equal(paused.disposition, "Definition only");
+  assert.match(paused.steps!.join("\n"), /Delete the job definition in Databricks/);
+  assert.match(paused.steps!.join("\n"), /managed resource group/);
+  assert.doesNotMatch(paused.steps!.join("\n"), /safe to delete/i);
+  assert.match(s.assets.find((a) => a.id === "20")!.configuration, /bill only while a run is active/);
+  assert.equal(s.signals.find((m) => m.assetId === "20" && m.metric === "Job runs started in window")!.value, 0);
+  assert.equal(card("21"), undefined);
+  assert.match(s.assets.find((a) => a.id === "21")!.configuration, /UNPAUSED/);
+  assert.equal(card("22")!.title, "Job uses an all-purpose cluster");
+  assert.match(card("22")!.evidence, /does not by itself stop the all-purpose cluster/);
+  assert.equal(card("23"), undefined);
+  const pipeline = card("idle-old")!;
+  assert.equal(pipeline.disposition, "Definition only");
+  assert.match(pipeline.evidence, /Target tables/);
+  assert.match(pipeline.steps!.join("\n"), /storage account/);
+  assert.match(s.assets.find((a) => a.id === "hot")!.configuration, /RUNNING pipelines are in use/);
+  assert.match(s.assets.find((a) => a.id === "idle-new")!.configuration, /newer than 14 days/);
+  assert.match(s.assets.find((a) => a.id === "idle-unknown")!.configuration, /not marked for deletion/);
+  assert.equal(card("hot"), undefined);
+  assert.equal(card("idle-new"), undefined);
+  assert.equal(card("idle-unknown"), undefined);
+  const partial = (await load(() => ({
+    items: Array.from({ length: 5001 }, (_, i) => ({
+      id: i,
+      job: 999,
+      state: "TERMINATED",
+      start: Date.now(),
+    })),
+  })))!;
+  assert.equal(partial.candidates.find((c) => c.assetId === "20"), undefined);
+  assert.match(
+    partial.assets.find((a) => a.id === "20")!.configuration,
+    /lower bound/,
+  );
+});
+test("RAG indexes stay paired with the vector-search endpoint that hosts them", async () => {
+  const r = resourceFromAzure(rawDB, scope, now);
+  const s = (await inspectService(
+    r,
+    rawDB,
+    scope,
+    async () => ({ value: [] }),
+    async (args) => {
+      const url = new URL(args[args.indexOf("--url") + 1]);
+      const path = url.pathname;
+      if (path.endsWith("/vector-search/endpoints"))
+        return {
+          items: [
+            { name: "docs", type: "STANDARD", state: "ONLINE", indexes: 2 },
+            { name: "empty", type: "STANDARD", state: "ONLINE", indexes: 0 },
+          ],
+        };
+      if (path.endsWith("/vector-search/indexes")) {
+        assert.equal(args[args.indexOf("--method") + 1], "get");
+        assert.doesNotMatch(args[args.indexOf("--query") + 1], /schema_json|status\.message/);
+        assert.equal(url.hostname, "adb-123456789.12.azuredatabricks.net");
+        return {
+          items: [
+            {
+              name: "main.rag.policies",
+              endpoint: "docs",
+              type: "DELTA_SYNC",
+              pipeline: "TRIGGERED",
+              source: "main.rag.policies_source",
+              ready: true,
+              rows: 1200,
+              state: "ONLINE",
+            },
+            {
+              name: "main.rag.tickets",
+              endpoint: "docs",
+              type: "DELTA_SYNC",
+              pipeline: "CONTINUOUS",
+              source: "main.rag.tickets_source",
+              ready: true,
+              rows: 40,
+              state: "ONLINE",
+            },
+            {
+              name: "main.rag.orphan",
+              endpoint: "other-endpoint",
+              type: "DIRECT_ACCESS",
+              ready: false,
+              rows: 0,
+              state: "OFFLINE",
+            },
+          ],
+        };
+      }
+      return { items: [] };
+    },
+    async () => [],
+  ))!;
+  const index = s.assets.find((a) => a.id === "index:main.rag.policies")!;
+  const continuous = s.assets.find((a) => a.id === "index:main.rag.tickets")!;
+  const orphan = s.assets.find((a) => a.id === "index:main.rag.orphan")!;
+  const endpoint = s.assets.find((a) => a.id === "vector:docs")!;
+  assert.equal(index.category, "RAG index");
+  assert.match(index.configuration, /Index endpoint docs/);
+  assert.match(index.configuration, /main\.rag\.policies_source/);
+  assert.match(endpoint.configuration, /main\.rag\.policies/);
+  assert.match(endpoint.configuration, /main\.rag\.tickets/);
+  assert.match(continuous.configuration, /Index endpoint docs/);
+  assert.match(continuous.configuration, /CONTINUOUS sync keeps a pipeline running/);
+  assert.match(orphan.configuration, /Index endpoint other-endpoint/);
+  assert.match(orphan.configuration, /not in the returned endpoint list/);
+  assert.equal(s.signals.find((m) => m.assetId === "index:main.rag.policies" && m.metric === "Indexed rows")!.value, 1200);
+  assert.match(s.candidates.find((c) => c.assetId === "vector:docs")!.evidence, /main\.rag\.policies/);
+  assert.equal(s.candidates.find((c) => c.assetId === "vector:docs")!.disposition, "Change policy");
+  assert.match(s.candidates.find((c) => c.assetId === "vector:empty")!.title, /no returned indexes/i);
+  assert.equal(index.url, "https://adb-123456789.12.azuredatabricks.net/vector-search/endpoints/docs/indexes/main.rag.policies");
+});
 test("system.billing assigns each DBU once and never starts a stopped warehouse", async () => {
   const classic = "a1b2c3d4e5f60718",
     serverless = "b1b2c3d4e5f60718",
@@ -567,7 +718,7 @@ test("system.billing assigns each DBU once and never starts a stopped warehouse"
         };
       }
       if (
-        ["/jobs/list", "/jobs/runs/list", "/pipelines", "/sql/history/queries", "/instance-pools/list", "/serving-endpoints", "/vector-search/endpoints"].some((path) =>
+        ["/jobs/list", "/jobs/runs/list", "/pipelines", "/sql/history/queries", "/instance-pools/list", "/serving-endpoints", "/vector-search/endpoints", "/vector-search/indexes"].some((path) =>
           url.pathname.endsWith(path),
         )
       )
@@ -624,7 +775,7 @@ test("system.billing assigns each DBU once and never starts a stopped warehouse"
         if (url.pathname.endsWith("/clusters/events")) return { items: [], total: 0 };
         if (url.pathname.endsWith("/sql/warehouses")) return { items: warehouses };
         if (
-          ["/jobs/list", "/jobs/runs/list", "/pipelines", "/sql/history/queries", "/instance-pools/list", "/serving-endpoints", "/vector-search/endpoints"].some((path) =>
+          ["/jobs/list", "/jobs/runs/list", "/pipelines", "/sql/history/queries", "/instance-pools/list", "/serving-endpoints", "/vector-search/endpoints", "/vector-search/indexes"].some((path) =>
             url.pathname.endsWith(path),
           )
         )

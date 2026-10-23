@@ -331,6 +331,11 @@ test("Databricks and Foundry inspections show billing layers, cleanup evidence a
     assert.match(f.$("#af-main").textContent, /Possible cleanup steps/);
     assert.match(f.$("#af-main").textContent, /SQL history queries/);
     assert.match(f.$("#af-main").textContent, /not a live warehouse query/i);
+    assert.match(f.$("#af-main").textContent, /RAG index/);
+    assert.match(f.$("#af-main").textContent, /Index endpoint docs-endpoint/);
+    assert.match(f.$("#af-main").textContent, /Paused job has no runs in the window/);
+    assert.match(f.$("#af-main").textContent, /Idle pipeline definition/);
+    assert.match(f.$("#af-main").textContent, /does not delete notebooks, tables/);
     assert.match(f.$("#af-main").textContent, /DBUs/);
     assert.match(f.$("#af-main").textContent, /not the Azure invoice/i);
     await f.input('[aria-label="Search service inventory"]', "reporting-sql");
