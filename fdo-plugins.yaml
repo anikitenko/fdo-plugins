@@ -23,3 +23,7 @@ spec:
       repository: https://github.com/anikitenko/fdo-plugins
       targetRevision: main
       path: /azure-finops
+    - name: hyperstack-availability
+      repository: https://github.com/anikitenko/fdo-plugins
+      targetRevision: main
+      path: /hyperstack-availability
