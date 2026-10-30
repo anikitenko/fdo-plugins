@@ -13,6 +13,7 @@ import {
 import {createAvailabilityService} from "./features/availability/service";
 import type {HyperstackProviderContract} from "./features/availability/service";
 import {createAvailabilityActions} from "./features/availability/actions";
+import {createDeploymentService} from "./features/availability/deployment";
 
 interface NormalizedStockItem {
   id: string;
@@ -223,9 +224,9 @@ const HYPERSTACK_PROVIDER: HyperstackProviderContract = {
 export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   private readonly pluginMetadata: PluginMetadata = {
     name: "Hyperstack availability",
-    version: "1.0.0",
+    version: "1.1.0",
     author: "AleXvWaN",
-    description: "Check Hyperstack GPU stock by region using a securely stored API key.",
+    description: "Check Hyperstack GPU stock and create one VM when a selected flavor becomes available.",
     icon: "server",
   };
 
@@ -251,6 +252,7 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
     const backend = createAvailabilityBackend({
       secrets: this.secrets,
       service,
+      deploymentService: createDeploymentService(),
     });
 
     PluginRegistry.registerHandler(
@@ -270,8 +272,10 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
 
     PluginRegistry.registerHandler(
       AVAILABILITY_HANDLERS.refresh,
-      () => backend.refresh(),
+      (content: unknown) => backend.refresh(content),
     );
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.armDeployment, (content: unknown) => backend.armDeployment(content));
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.cancelDeployment, () => backend.cancelDeployment());
   }
 
   render(): string {

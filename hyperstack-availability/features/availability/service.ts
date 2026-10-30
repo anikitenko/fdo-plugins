@@ -129,8 +129,8 @@ interface NormalizedStockItem {
 }
 
 function mergeInventory(
-  catalog: NormalizedStockItem[],
-  stock: NormalizedStockItem[],
+  catalog: readonly NormalizedStockItem[],
+  stock: readonly NormalizedStockItem[],
 ): NormalizedStockItem[] {
   const stockById = new Map(
     stock.map(item => [item.id, item]),

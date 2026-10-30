@@ -46,7 +46,26 @@ Stock states mean:
 
 **Available VMs** shows a count only when reported; otherwise it displays **Not reported**. The last successful check timestamp identifies the snapshot’s age. Availability can change before a VM is created, and this plugin does not reserve capacity.
 
-Automatic refresh supports manual checks or intervals of one, five or ten minutes. Hidden views skip polling checks. Duplicate operations are prevented while a request is in progress, and lifecycle cleanup stops polling and prevents late responses from updating a disposed view.
+Automatic refresh supports manual checks or intervals of one, five or ten minutes. Hidden views skip ordinary polling checks; explicitly armed VM creation continues checking while the view remains open. Duplicate operations are prevented while a request is in progress, and lifecycle cleanup stops polling and prevents late responses from updating a disposed view.
+
+## Create one VM when stock becomes available
+
+1. Check availability, then choose the exact flavor and region in **Create a VM when available**. Out-of-stock types can be selected.
+2. Enter a new VM name, an **existing environment name in that region**, the exact **API image name**, and an **existing SSH keypair name** belonging to the environment. Create the environment and import the public SSH key in Hyperstack beforehand.
+3. Choose whether to assign a public IP. No inbound firewall rules are added; configure network access in Hyperstack.
+4. Acknowledge the resulting Hyperstack charges, then choose **Create one VM when available**. This authorizes one creation request, including immediate creation if a fresh check reports stock.
+
+An armed plan checks immediately, then every minute while the view stays open (including when hidden), independently of the availability refresh selector. The backend checks fresh availability for the exact selected type, verifies the environment's region, and sends a single creation request with `count: 1`. Availability is not a reservation: quota, balance, image/keypair validity and stock changes can still cause rejection.
+
+The deployment fields stay locked while waiting. **Cancel waiting** stops the plan; it does not delete a submitted VM. Closing/reloading the view stops its polling and makes a best-effort cancellation request. An in-flight creation request can still finish. Waiting plans are kept only in backend memory; reopening the view never resumes them automatically. If an interrupted view left a waiting plan behind, use **Cancel waiting** before arming another. Replacing or removing the API key also cancels waiting.
+
+Successful submission shows the VM ID; follow provisioning and connection details in the Hyperstack console. Failures stop the plan. A timeout, malformed success or lost acknowledgement can mean the VM was created: check the console for the VM name before explicitly arming another plan. Creation is never automatically retried. API keys and raw provider errors remain backend-only.
+
+The API implementation follows Hyperstack's [Create virtual machines](https://docs.hyperstack.cloud/docs/api-reference/create-vms/), [Quickstart](https://docs.hyperstack.cloud/docs/api-reference/quickstart/) and [List environments](https://docs.hyperstack.cloud/docs/api-reference/list-environments/) documentation. The saved key needs permission to read environments and create VMs in addition to checking stock.
+
+## Development verification
+
+Run `npm run verify` for strict TypeScript checking against the installed SDK, all workspace tests through FDO's actual test runner, and a production build using FDO's CSS-aware workspace compiler. `npm test` runs the checks/tests; `npm run build` builds only. These commands use the sibling `../../fdo` checkout and its installed development dependencies; set `FDO_SOURCE_ROOT` to use another checkout. No live credentials or cloud resources are needed by the tests.
 
 ## Recover from failures
 

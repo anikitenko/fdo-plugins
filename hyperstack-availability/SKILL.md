@@ -31,6 +31,15 @@ Repair the Hyperstack availability monitor to use the SDK’s existing backend n
 - Replace the blanket adapter-unavailable state with states reflecting actual credential, capability, storage and provider outcomes.
 - Preserve existing stock behavior, lifecycle contracts, compatibility declarations and assertions; use deterministic mocked tests without live credentials.
 
+## VM creation extension
+- `/features/availability/deployment.ts` owns validated one-VM plans and backend-only environment lookup/creation. Follow the official Hyperstack `POST /core/virtual-machines` contract; use `count: 1` and never automatically retry creation.
+- Arming requires a checked type and explicit acknowledgement of charges. Backend refresh checks fresh stock and consumes only the exact plan bound to the arming view's launch ID. Unavailable, unknown, missing and different types never trigger creation.
+- Verify that the existing environment belongs to the selected region. Preserve backend credential isolation, fixed HTTPS destinations, deadlines covering body parsing, redacted responses, and explicit uncertain outcomes after potentially accepted requests.
+- Waiting is view-scoped and in memory. Poll once per minute while armed, including in a hidden but mounted view; clean up polling and request best-effort cancellation on disposal. Do not imply that cancelling waiting deletes or stops a submitted VM.
+- `/features/availability/deployment.test.ts` covers exact-type stock gating, acknowledgement/input validation, single-use execution, cancellation, concurrent refreshes, region validation, request fields, deadlines, redaction and connection changes.
+- `/features/availability/actions.test.ts` additionally dispatches deployment clicks through the real backend, verifies one-minute waiting polls, one creation, acknowledgement reset, and disposal cleanup. `/render.test.ts` verifies the deployment form's labels and charge acknowledgement.
+- `npm run verify` uses `/scripts/verify.mjs` to run strict SDK type checking, the FDO workspace tests and the production CSS-aware build.
+
 ## Verified SDK examples
 ### validated-handler
 ~~~typescript

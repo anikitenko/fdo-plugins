@@ -33,6 +33,8 @@ export function createAvailabilityActions() {
       {selector: "#hyperstack-stock-status", event: "change", handler: "command"},
       {selector: "#hyperstack-query", event: "input", handler: "command"},
       {selector: "#hyperstack-polling", event: "change", handler: "command"},
+      {selector: "#hyperstack-deploy-arm", event: "click", handler: "command"},
+      {selector: "#hyperstack-deploy-cancel", event: "click", handler: "command"},
     ],
     setup: () => {
       const root = document.getElementById("hyperstack-availability");
@@ -45,6 +47,8 @@ export function createAvailabilityActions() {
       let stale = false;
       let timer: number | undefined;
       let pollingSeconds = 0;
+      let launchId: string | undefined;
+      let deploymentUncertain = false;
 
       // Native disclosure needs no frontend controller or event listeners.
       // Keep it outside the existing error paragraph to preserve valid markup.
@@ -101,6 +105,11 @@ export function createAvailabilityActions() {
         disable("save-connection", busy);
         disable("clear-connection", busy || !configuration?.configured);
         disable("refresh", busy || !ready);
+        disable("deploy-arm", busy || !ready || !snapshot || Boolean(launchId) || deploymentUncertain);
+        disable("deploy-cancel", busy || !ready);
+        for (const field of ["type", "name", "environment", "image", "keypair", "public-ip", "charges"]) {
+          disable(`deploy-${field}`, busy || Boolean(launchId) || (field === "type" && !snapshot));
+        }
         text("refresh", busy ? "Checking…" : "Check availability");
         text("save-connection", busy ? "Please wait…" : "Save API key");
         show("loading", busy);
@@ -338,6 +347,24 @@ export function createAvailabilityActions() {
 
       const renderResults = () => {
         if (disposed || !snapshot) return;
+        const type = get("deploy-type");
+        if (type) {
+          const selected = value("deploy-type");
+          const options = document.createDocumentFragment();
+          const placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = "Choose a VM type and region";
+          placeholder.selected = !selected;
+          options.appendChild(placeholder);
+          for (const item of snapshot.items) {
+            const option = document.createElement("option");
+            option.value = item.id;
+            option.textContent = `${item.flavor} · ${item.region} · ${item.gpu} · ${item.status}`;
+            option.selected = item.id === selected;
+            options.appendChild(option);
+          }
+          type.replaceChildren(options);
+        }
         const region = value("region");
         const gpu = value("gpu");
         const status = value("stock-status");
@@ -437,17 +464,18 @@ export function createAvailabilityActions() {
 
       const schedule = () => {
         stopTimer();
-        if (disposed || busy || pollingSeconds === 0 || !configuration?.ready) return;
+        const interval = launchId ? 60 : pollingSeconds;
+        if (disposed || busy || interval === 0 || !configuration?.ready) return;
         timer = window.setTimeout(() => {
           timer = undefined;
-          if (!disposed && !document.hidden) void run("refresh");
+          if (!disposed && (launchId || !document.hidden)) void run("refresh");
           else schedule();
-        }, pollingSeconds * 1000);
+        }, interval * 1000);
       };
 
       const request = async (
         handler: string,
-        content: Readonly<Record<string, string>>,
+        content: Readonly<Record<string, unknown>>,
       ): Promise<unknown> => {
         const response: unknown = await window.createBackendReq(
           "UI_MESSAGE",
@@ -463,12 +491,34 @@ export function createAvailabilityActions() {
       };
 
       const run = async (
-        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh",
+        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh" | "armDeployment" | "cancelDeployment",
       ): Promise<void> => {
         if (disposed || busy) return;
         if (operation === "refresh" && !configuration?.ready) return;
 
-        let content: Readonly<Record<string, string>> = {};
+        let content: Readonly<Record<string, unknown>> = {};
+        const checked = (name: string) => {
+          const node = get(name);
+          return Boolean(node && "checked" in node && node.checked === true);
+        };
+        if (operation === "refresh" && launchId) content = {launchId};
+        if (operation === "armDeployment") {
+          if (!configuration?.ready || launchId || deploymentUncertain) return;
+          const itemId = value("deploy-type");
+          const name = value("deploy-name").trim();
+          const environment = value("deploy-environment").trim();
+          const image = value("deploy-image").trim();
+          const keypair = value("deploy-keypair").trim();
+          if (!itemId || !name || !environment || !image || !keypair || !checked("deploy-charges")) {
+            text("deploy-status", "Select a VM type, complete all deployment fields and acknowledge charges.");
+            return;
+          }
+          content = {itemId, name, environment, image, keypair, publicIp: checked("deploy-public-ip"), confirmCharges: true};
+        }
+        if (operation === "cancelDeployment") {
+          launchId = undefined;
+          deploymentUncertain = false;
+        }
         if (operation === "saveConnection") {
           const key = value("api-key").trim();
           const input = get("api-key");
@@ -478,6 +528,10 @@ export function createAvailabilityActions() {
             return;
           }
           content = {apiKey: key};
+        }
+        if (operation === "saveConnection" || operation === "removeConnection") {
+          launchId = undefined;
+          text("deploy-status", "Waiting cancelled because the connection changed.");
         }
 
         busy = true;
@@ -497,6 +551,16 @@ export function createAvailabilityActions() {
           if (!nextConfiguration) throw new Error("Invalid configuration response");
 
           configuration = nextConfiguration;
+          if (isRecord(response.deployment) && typeof response.deployment.message === "string") {
+            text("deploy-status", response.deployment.message);
+            if (operation === "armDeployment" && response.deployment.status === "waiting" && typeof response.deployment.launchId === "string") {
+              launchId = response.deployment.launchId;
+            } else if (response.deployment.status !== "waiting") {
+              launchId = undefined;
+              const acknowledgement = get("deploy-charges");
+              if (acknowledgement && "checked" in acknowledgement) acknowledgement.checked = false;
+            }
+          }
           if (!response.ok) {
             const presentation = failurePresentation(response.error);
             setError(presentation.message, presentation.details);
@@ -514,6 +578,11 @@ export function createAvailabilityActions() {
           }
         } catch {
           if (disposed) return;
+          if (launchId || operation === "armDeployment") {
+            launchId = undefined;
+            deploymentUncertain = true;
+            text("deploy-status", "The operation could not be confirmed. Automatic creation checks have stopped. Check Hyperstack for the VM, then use Cancel waiting before arming again.");
+          }
           setError("The operation could not be completed. Check plugin permissions and retry.");
           if (operation === "refresh" && snapshot) markStale(true);
         } finally {
@@ -522,6 +591,7 @@ export function createAvailabilityActions() {
           if (!disposed) {
             updateControls();
             schedule();
+            if (operation === "armDeployment" && launchId) void run("refresh");
           }
         }
       };
@@ -537,6 +607,12 @@ export function createAvailabilityActions() {
             break;
           case "hyperstack-refresh":
             void run("refresh");
+            break;
+          case "hyperstack-deploy-arm":
+            void run("armDeployment");
+            break;
+          case "hyperstack-deploy-cancel":
+            void run("cancelDeployment");
             break;
           case "hyperstack-polling": {
             const seconds = Number(value("polling"));
@@ -564,6 +640,10 @@ export function createAvailabilityActions() {
       return () => {
         disposed = true;
         stopTimer();
+        // Best effort only. A disposed view also stops sending its launch ID,
+        // so later ordinary refreshes cannot resume an abandoned plan.
+        if (launchId) void request("hyperstack.availability.cancelDeployment", {}).catch(() => undefined);
+        launchId = undefined;
         root.removeEventListener("hyperstack-availability-command", onCommand);
         technicalText.textContent = "";
         technicalDetails.hidden = true;

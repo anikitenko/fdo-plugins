@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {createAvailabilityActions} from "./actions";
-import {AVAILABILITY_HANDLERS} from "./backend";
+import {AVAILABILITY_HANDLERS, createAvailabilityBackend} from "./backend";
 import type {
   AvailabilityConfiguration,
   AvailabilityConfigurationResult,
@@ -30,6 +30,7 @@ class ViewElement extends EventTarget {
   hidden = false;
   value = "";
   selected = false;
+  checked = false;
   private ownText = "";
 
   constructor(
@@ -146,6 +147,16 @@ class ViewDocument {
       results: "section",
       "results-body": "tbody",
       empty: "p",
+      "deploy-type": "select",
+      "deploy-name": "input",
+      "deploy-environment": "input",
+      "deploy-image": "input",
+      "deploy-keypair": "input",
+      "deploy-public-ip": "input",
+      "deploy-charges": "input",
+      "deploy-arm": "button",
+      "deploy-cancel": "button",
+      "deploy-status": "p",
     };
     for (const [name, tag] of Object.entries(tags)) {
       const id = `hyperstack-${name}`;
@@ -629,4 +640,90 @@ test("disposing an idle lifecycle cancels its scheduled polling callback", async
   await settle();
   assert.equal(view.calls.length, callCount);
   assert.equal(view.timers.size, 0);
+});
+
+test("deployment clicks arm one VM, poll fresh stock and stop after creation", async (t) => {
+  let current = snapshot("GPU VM", 0);
+  let creations = 0;
+  const backend = createAvailabilityBackend({
+    secrets: {get: async () => "backend-only-key", set: async () => {}, delete: async () => true},
+    service: {check: async () => ({ok: true, snapshot: current})},
+    deploymentService: {create: async (_key, plan, item) => {
+      creations++;
+      assert.equal(plan.name, "new-vm");
+      assert.equal(item.flavor, "GPU VM");
+      return {status: "submitted", message: "VM #42 was scheduled for creation.", vmId: 42};
+    }},
+  });
+  const view = harness(async call => {
+    switch (call.handler) {
+      case AVAILABILITY_HANDLERS.configuration: return backend.getConfiguration();
+      case AVAILABILITY_HANDLERS.refresh: return backend.refresh(call.content);
+      case AVAILABILITY_HANDLERS.armDeployment: return backend.armDeployment(call.content);
+      case AVAILABILITY_HANDLERS.cancelDeployment: return backend.cancelDeployment();
+      default: throw new Error("Unexpected operation");
+    }
+  });
+  t.after(() => view.dispose());
+  await settle();
+  view.click("refresh");
+  await settle();
+  view.click("deploy-arm");
+  await settle();
+  assert.equal(view.calls.filter(call => call.handler === AVAILABILITY_HANDLERS.armDeployment).length, 0);
+  assert.match(view.document.get("deploy-status").textContent, /complete all deployment fields/);
+  view.document.get("deploy-type").value = current.items[0].id;
+  for (const [name, value] of Object.entries({name: "new-vm", environment: "env", image: "Ubuntu", keypair: "key"})) view.document.get(`deploy-${name}`).value = value;
+  view.document.get("deploy-charges").checked = true;
+  view.click("deploy-arm");
+  view.document.get("deploy-arm").dispatchEvent(new Event("click"));
+  await settle();
+  await settle();
+  assert.equal(view.calls.filter(call => call.handler === AVAILABILITY_HANDLERS.armDeployment).length, 1);
+  assert.equal(creations, 0);
+  assert.equal(view.document.get("deploy-name").hasAttribute("disabled"), true);
+  assert.equal(view.timers.size, 1);
+  assert.equal([...view.timers.values()][0].delay, 60_000);
+  assert.match(view.document.get("deploy-status").textContent, /Armed for one/);
+  current = snapshot("GPU VM", 1);
+  view.document.hidden = true; // Explicitly armed automation also checks in a hidden view.
+  view.fireTimer();
+  await settle();
+  await settle();
+  assert.equal(creations, 1);
+  assert.match(view.document.get("deploy-status").textContent, /#42/);
+  assert.equal(view.timers.size, 0);
+  assert.equal(view.document.get("deploy-charges").checked, false);
+  view.click("refresh");
+  await settle();
+  assert.equal(creations, 1);
+  assert.doesNotMatch(JSON.stringify(view.calls), /backend-only-key/);
+});
+
+test("disposing an armed view cancels waiting and never resumes creation", async (t) => {
+  const view = harness(async call => {
+    if (call.handler === AVAILABILITY_HANDLERS.configuration) return {ok: true, configuration: ready};
+    if (call.handler === AVAILABILITY_HANDLERS.armDeployment) return {ok: true, configuration: ready, deployment: {status: "waiting", launchId: "one", message: "Waiting"}};
+    if (call.handler === AVAILABILITY_HANDLERS.cancelDeployment) return {ok: true, configuration: ready};
+    return success(snapshot("VM", 0));
+  });
+  t.after(() => view.dispose());
+  await settle();
+  view.click("refresh");
+  await settle();
+  view.document.get("deploy-type").value = "region-a:gpu-a:flavor-a";
+  for (const name of ["name", "environment", "image", "keypair"]) view.document.get(`deploy-${name}`).value = "configured";
+  view.document.get("deploy-charges").checked = true;
+  view.click("deploy-arm");
+  await settle();
+  assert.equal(view.timers.size, 1);
+  const queued = [...view.timers.values()][0].callback;
+  view.dispose();
+  await settle();
+  assert.equal(view.calls.at(-1)?.handler, AVAILABILITY_HANDLERS.cancelDeployment);
+  assert.equal(view.timers.size, 0);
+  const calls = view.calls.length;
+  queued();
+  await settle();
+  assert.equal(view.calls.length, calls);
 });

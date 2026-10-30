@@ -586,5 +586,33 @@ export function renderAvailability(
     renderConnectionControls(dom, state, classes),
     renderAvailabilityFilters(dom, state, classes),
     renderAvailabilityResults(dom, state, classes),
+    renderDeploymentControls(dom, classes),
+  );
+}
+
+function renderDeploymentControls(dom: DOM, classes: AvailabilityViewClasses): string {
+  const field = (id: string, label: string, type = "text") => labeledField(
+    dom, `hyperstack-deploy-${id}`, label,
+    dom.createElement("input", {id: `hyperstack-deploy-${id}`, type, ...(type === "text" ? {maxlength: id === "image" ? "255" : "50", required: "required"} : {})}),
+    classes,
+  );
+  return dom.createElement("section", {class: classes.panel ?? "", "aria-labelledby": "hyperstack-deploy-heading"},
+    dom.createElement("h2", {id: "hyperstack-deploy-heading"}, "Create a VM when available"),
+    paragraph(dom, "Choose a VM type after checking stock. Enter an existing environment in that region, an API image name and an SSH keypair from that environment.", {class: classes.muted ?? ""}),
+    dom.createElement("div", {class: classNames("pure-form", "pure-form-stacked", classes.controls)},
+      labeledField(dom, "hyperstack-deploy-type", "Desired VM type and region", dom.createElement("select", {id: "hyperstack-deploy-type", disabled: "disabled"}, option(dom, "", "Check availability first", true)), classes),
+      field("name", "New VM name"),
+      field("environment", "Existing environment name"),
+      field("image", "API image name"),
+      field("keypair", "Existing SSH keypair name"),
+      field("public-ip", "Assign a public IP", "checkbox"),
+      field("charges", "I authorize creation of one VM and the resulting Hyperstack charges", "checkbox"),
+    ),
+    paragraph(dom, "Arming checks stock immediately, then every minute while this view stays open, including when hidden. Creation stops after one request. Closing or reloading the view stops automatic checks. No inbound firewall rules are added; configure access in Hyperstack.", {class: classes.muted ?? ""}),
+    dom.createElement("div", {class: classes.controls ?? ""},
+      command(dom, "hyperstack-deploy-arm", "Create one VM when available", true, classes, true),
+      command(dom, "hyperstack-deploy-cancel", "Cancel waiting", true, classes),
+    ),
+    paragraph(dom, "No VM creation is armed.", {id: "hyperstack-deploy-status", role: "status", "aria-live": "polite"}),
   );
 }

@@ -507,6 +507,27 @@ test("renders stock evidence, summary and successful check time", () => {
   assertRegisteredStyles(root);
 });
 
+test("renders labelled one-VM deployment fields with explicit charge acknowledgement", () => {
+  const root = render();
+  const nodes = elements(root);
+  for (const suffix of ["type", "name", "environment", "image", "keypair", "public-ip", "charges"]) {
+    const id = `hyperstack-deploy-${suffix}`;
+    byId(root, id);
+    assert.equal(nodes.filter(node => node.tag === "label" && node.attributes.for === id).length, 1);
+  }
+  for (const suffix of ["arm", "cancel"]) {
+    const button = byId(root, `hyperstack-deploy-${suffix}`);
+    assert.equal(button.attributes.type, "button");
+    assert.equal(isDisabled(button), true);
+  }
+  const acknowledgement = byId(root, "hyperstack-deploy-charges");
+  assert.equal(acknowledgement.attributes.type, "checkbox");
+  assert.equal(Object.hasOwn(acknowledgement.attributes, "checked"), false);
+  assert.match(visibleText(root), /authorize creation of one VM/);
+  assert.match(visibleText(root), /every minute/);
+  assert.equal(byId(root, "hyperstack-deploy-status").attributes["aria-live"], "polite");
+});
+
 test("preserves filters, empty states, busy controls and stale results", () => {
   const filtered = render({
     configuration: ready,

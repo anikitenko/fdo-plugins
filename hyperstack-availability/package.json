@@ -2,6 +2,11 @@
   "name": "test-hyperstack",
   "main": "dist/index.cjs",
   "source": "index.ts",
+  "scripts": {
+    "test": "node scripts/verify.mjs test",
+    "build": "node scripts/verify.mjs build",
+    "verify": "node scripts/verify.mjs"
+  },
   "fdo": {
     "compatibility": {
       "fdo": ">=1.0.3 <2.0.0",

@@ -1,5 +1,7 @@
 import type {FDO_SDK} from "@anikitenko/fdo-sdk";
 import type {AvailabilitySnapshot} from "./logic";
+import {createDeploymentController} from "./deployment";
+import type {DeploymentService, DeploymentState} from "./deployment";
 import type {
   AvailabilityService,
   AvailabilityServiceDiagnostics,
@@ -12,6 +14,8 @@ export const AVAILABILITY_HANDLERS = {
   saveConnection: "hyperstack.availability.saveConnection",
   removeConnection: "hyperstack.availability.removeConnection",
   refresh: "hyperstack.availability.refresh",
+  armDeployment: "hyperstack.availability.armDeployment",
+  cancelDeployment: "hyperstack.availability.cancelDeployment",
 } as const;
 
 /** One plugin-scoped key; never accept a storage key from iframe input. */
@@ -74,6 +78,7 @@ export type AvailabilityRefreshResult =
       readonly ok: true;
       readonly configuration: AvailabilityConfiguration;
       readonly snapshot: AvailabilitySnapshot;
+      readonly deployment?: DeploymentState;
     }
   | AvailabilityBackendFailure;
 
@@ -82,6 +87,7 @@ export interface AvailabilityBackendOptions {
   readonly secrets: AvailabilitySecretStore;
   /** Construct the service in backend code, never from iframe options. */
   readonly service: AvailabilityService;
+  readonly deploymentService?: DeploymentService;
 }
 
 export interface AvailabilityBackend {
@@ -89,7 +95,9 @@ export interface AvailabilityBackend {
   /** UI_MESSAGE content is passed directly: {apiKey: string}. */
   saveConnection(content: unknown): Promise<AvailabilityConfigurationResult>;
   removeConnection(): Promise<AvailabilityConfigurationResult>;
-  refresh(): Promise<AvailabilityRefreshResult>;
+  refresh(content?: unknown): Promise<AvailabilityRefreshResult>;
+  armDeployment(content: unknown): Promise<AvailabilityConfigurationResult & {deployment?: DeploymentState}>;
+  cancelDeployment(): Promise<AvailabilityConfigurationResult & {deployment?: DeploymentState}>;
 }
 
 const CONFIGURATION_MESSAGES: Readonly<
@@ -311,6 +319,8 @@ export function createAvailabilityBackend(
   options: AvailabilityBackendOptions,
 ): AvailabilityBackend {
   const {secrets, service} = options;
+  const deployment = options.deploymentService ? createDeploymentController(options.deploymentService) : null;
+  let latestSnapshot: AvailabilitySnapshot | null = null;
   let queue: Promise<void> = Promise.resolve();
 
   function exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -343,6 +353,8 @@ export function createAvailabilityBackend(
 
     saveConnection(content: unknown): Promise<AvailabilityConfigurationResult> {
       return exclusive(async () => {
+        deployment?.cancel();
+        latestSnapshot = null;
         let apiKey: string | null;
         try {
           apiKey = readCredentialInput(content);
@@ -374,6 +386,8 @@ export function createAvailabilityBackend(
 
     removeConnection(): Promise<AvailabilityConfigurationResult> {
       return exclusive(async () => {
+        deployment?.cancel();
+        latestSnapshot = null;
         try {
           // A missing key is already the requested state.
           await secrets.delete(AVAILABILITY_SECRET_KEY);
@@ -387,7 +401,22 @@ export function createAvailabilityBackend(
       });
     },
 
-    refresh(): Promise<AvailabilityRefreshResult> {
+    armDeployment(content: unknown) {
+      return exclusive(async () => {
+        const inspected = await inspectConfiguration();
+        if (!inspected.ok || !inspected.configuration.ready || !deployment) return inspected;
+        return {...inspected, deployment: deployment.arm(content, latestSnapshot)};
+      });
+    },
+
+    cancelDeployment() {
+      return exclusive(async () => ({
+        ...await inspectConfiguration(),
+        ...(deployment ? {deployment: deployment.cancel()} : {}),
+      }));
+    },
+
+    refresh(content?: unknown): Promise<AvailabilityRefreshResult> {
       return exclusive(async () => {
         let apiKey: string | null;
         try {
@@ -412,10 +441,16 @@ export function createAvailabilityBackend(
             return serviceFailure(current, result.error);
           }
 
+          latestSnapshot = result.snapshot;
+          const launchId = typeof content === "object" && content !== null && "launchId" in content ? content.launchId : undefined;
+          const deploymentState = deployment
+            ? await deployment.onSnapshot(apiKey, result.snapshot, launchId)
+            : undefined;
           return {
             ok: true,
             configuration: current,
             snapshot: result.snapshot,
+            ...(deploymentState ? {deployment: deploymentState} : {}),
           };
         } catch {
           // The service normally returns failures as data. Unexpected thrown
