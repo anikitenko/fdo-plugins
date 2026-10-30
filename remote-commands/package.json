@@ -18,5 +18,13 @@
   },
   "engines": { "node": ">=22.18" },
   "dependencies": { "@anikitenko/fdo-sdk": "^1.8.3" },
-  "devDependencies": { "@types/node": "^22.0.0", "esbuild": "^0.25.0", "jsdom": "^27.4.0", "typescript": "^5.9.3" }
+  "devDependencies": { "@types/node": "^22.0.0", "esbuild": "^0.25.0", "jsdom": "^27.4.0", "typescript": "^5.9.3" },
+  "fdo": {
+    "compatibility": {
+      "fdo": ">=1.0.3 <2.0.0",
+      "sdk": ">=1.8.3 <2.0.0",
+      "api": "^1.0.0",
+      "features": []
+    }
+  }
 }
