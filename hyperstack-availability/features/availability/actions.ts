@@ -30,6 +30,7 @@ export function createAvailabilityActions() {
       {selector: "#hyperstack-deploy-reload", event: "click", handler: "command"},
       {selector: "#hyperstack-deploy-type", event: "change", handler: "command"},
       {selector: "#hyperstack-deploy-environment", event: "change", handler: "command"},
+      {selector: "#hyperstack-manage-connection", event: "click", handler: "command"},
       {selector: "#hyperstack-save-connection", event: "click", handler: "command"},
       {selector: "#hyperstack-clear-connection", event: "click", handler: "command"},
       {selector: "#hyperstack-refresh", event: "click", handler: "command"},
@@ -48,6 +49,7 @@ export function createAvailabilityActions() {
       let disposed = false;
       let busy = false;
       let configuration: AvailabilityConfiguration | null = null;
+      let connectionExpanded = false;
       let snapshot: AvailabilitySnapshot | null = null;
       let stale = false;
       let timer: number | undefined;
@@ -108,6 +110,12 @@ export function createAvailabilityActions() {
       const updateControls = () => {
         if (disposed) return;
         const ready = configuration?.ready === true;
+        const configured = configuration?.configured === true;
+        show("connection", !configured || connectionExpanded);
+        show("manage-connection", configured);
+        disable("manage-connection", busy);
+        get("manage-connection")?.setAttribute("aria-expanded", String(configured && connectionExpanded));
+        text("manage-connection", connectionExpanded ? "Hide connection" : "Manage connection");
         disable("api-key", busy);
         disable("save-connection", busy);
         disable("clear-connection", busy || !configuration?.configured);
@@ -625,6 +633,8 @@ export function createAvailabilityActions() {
           if (!nextConfiguration) throw new Error("Invalid configuration response");
 
           configuration = nextConfiguration;
+          if (response.ok && (operation === "saveConnection" || operation === "removeConnection")) connectionExpanded = false;
+          if (!response.ok && isRecord(response.error) && response.error.code === "authentication_failed") connectionExpanded = true;
           const monitoring = isRecord(response.monitoring) ? response.monitoring : null;
           if (operation === "configuration" && monitoring) {
             const plan = monitoring.plan;
@@ -689,6 +699,11 @@ export function createAvailabilityActions() {
       const onCommand = (event: Event) => {
         if (disposed || !("detail" in event) || typeof event.detail !== "string") return;
         switch (event.detail) {
+          case "hyperstack-manage-connection":
+            if (busy || !configuration?.configured) return;
+            connectionExpanded = !connectionExpanded;
+            updateControls();
+            break;
           case "hyperstack-save-connection":
             void run("saveConnection");
             break;

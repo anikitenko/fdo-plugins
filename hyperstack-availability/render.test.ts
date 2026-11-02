@@ -371,7 +371,8 @@ test("renders actionable SDK configuration states and ready refresh controls", (
   for (const configuration of states) {
     const root = render({configuration});
     const help = byId(root, ids.connectionHelp);
-    assert.equal(isHidden(help), false);
+    assert.equal(isHidden(help), configuration.configured);
+    assert.equal(isHidden(byId(root, ids.manageConnection)), !configuration.configured);
     assert.equal(visibleText(help), configuration.message);
     assert.equal(
       visibleText(byId(root, ids.connectionStatus)),

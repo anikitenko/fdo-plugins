@@ -131,6 +131,7 @@ class ViewDocument {
       "connection-status": "p",
       "connection-help": "p",
       "api-key": "input",
+      "manage-connection": "button",
       "save-connection": "button",
       "clear-connection": "button",
       refresh: "button",
@@ -476,6 +477,8 @@ test("connection and refresh clicks use backend operations and prevent duplicate
   assert.equal(view.document.get("refresh").hasAttribute("disabled"), true); // Automatic first stock check is in flight.
   assert.match(view.document.get("connection-status").textContent, /saved/i);
   assert.equal(view.document.get("connection-help").textContent, ready.message);
+  assert.equal(view.document.get("connection").hidden, true);
+  assert.equal(view.document.get("manage-connection").hidden, false);
   assert.equal(view.document.get("error").hidden, true);
 
   view.click("refresh");
@@ -508,8 +511,16 @@ test("connection and refresh clicks use backend operations and prevent duplicate
   assert.equal(view.document.get("refresh").hasAttribute("disabled"), false);
   assert.equal(view.document.get("results").getAttribute("aria-busy"), "false");
 
+  view.click("manage-connection");
+  assert.equal(view.document.get("connection").hidden, false);
+  assert.equal(view.document.get("manage-connection").getAttribute("aria-expanded"), "true");
+  view.click("manage-connection");
+  assert.equal(view.document.get("connection").hidden, true);
+  view.click("manage-connection");
   view.click("clear-connection");
   await settle();
+  assert.equal(view.document.get("connection").hidden, false);
+  assert.equal(view.document.get("manage-connection").hidden, true);
   assert.equal(view.calls.at(-1)?.handler, AVAILABILITY_HANDLERS.removeConnection);
   assert.equal(view.document.get("refresh").hasAttribute("disabled"), true);
   assert.equal(view.document.get("clear-connection").hasAttribute("disabled"), true);

@@ -16,6 +16,7 @@ import type {AvailabilityConfiguration} from "./backend";
 export const AVAILABILITY_VIEW_IDS = {
   root: "hyperstack-availability",
   connection: "hyperstack-connection",
+  manageConnection: "hyperstack-manage-connection",
   connectionStatus: "hyperstack-connection-status",
   connectionHelp: "hyperstack-connection-help",
   apiKey: "hyperstack-api-key",
@@ -217,10 +218,11 @@ export function renderConnectionControls(
     ...disabledWhen(busy),
   });
 
-  return dom.createElement(
+  const section = dom.createElement(
     "section",
     {
       id: ids.connection,
+      ...hiddenUnless(configuration?.configured !== true),
       class: classes.panel ?? "",
       "aria-labelledby": `${ids.connection}-heading`,
       "aria-busy": String(busy),
@@ -259,6 +261,14 @@ export function renderConnectionControls(
         classes,
       ),
     ),
+  );
+  return dom.createElement("div", {},
+    dom.createElement("button", {
+      id: ids.manageConnection, type: "button", class: classNames("pure-button", classes.command),
+      "aria-controls": ids.connection, "aria-expanded": "false",
+      ...hiddenUnless(configuration?.configured === true), ...disabledWhen(busy),
+    }, "Manage connection"),
+    section,
   );
 }
 
