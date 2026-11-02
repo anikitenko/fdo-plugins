@@ -24,6 +24,8 @@ Declarations request capabilities; they do not grant access.
 | `secrets.get` | Read the saved key in backend code for authentication. |
 | `secrets.set` | Save or replace the key. |
 | `secrets.delete` | Remove the saved key. |
+| `storage` | Enable plugin-scoped persistent storage. |
+| `storage.json` | Persist VM configuration, monitoring status and last successful check time. |
 | `system.network` | Enable backend network access. |
 | `system.network.https` | Permit HTTPS requests. |
 | `system.network.scope.<id>` | Permit the destination through the matching network scope declared by the plugin. |
@@ -50,16 +52,16 @@ Automatic refresh supports manual checks or intervals of one, five or ten minute
 
 ## Create one VM when stock becomes available
 
-1. Check availability, then choose the exact flavor and region in **Create a VM when available**. Out-of-stock types can be selected.
+1. Check availability, then choose the exact flavor and region in **Configure your GPU VM**. Out-of-stock types can be selected.
 2. After connecting, the plugin preloads environments, grouped OS images and SSH keys from the API, and checks stock automatically. Choose hardware and a region, then select an environment and image in that region and an SSH key from that environment. Enter a new VM name. Use **Reload VM options** after creating resources in Hyperstack.
 3. Optionally assign a public IP, enable inbound SSH with an explicit IPv4 source CIDR (for example your IP with `/32`), and supply a cloud-init script. SSH is off by default; enabling it adds only an ingress TCP port 22 rule. Otherwise configure network access in Hyperstack.
 4. Acknowledge the resulting Hyperstack charges, then choose **Create one VM when available**. This authorizes one creation request, including immediate creation if a fresh check reports stock.
 
-An armed plan checks immediately, then every minute while the view stays open (including when hidden), independently of the availability refresh selector. The backend checks fresh availability for the exact selected type, verifies the environment's region, and sends a single creation request with `count: 1`. Availability is not a reservation: quota, balance, image/keypair validity and stock changes can still cause rejection.
+An armed plan checks immediately, then 60 seconds after each completed check while FDO is open (including when the plugin is hidden), independently of the availability refresh selector. The backend checks fresh availability for the exact selected type, verifies the environment's region, and sends a single creation request with `count: 1`. Availability is not a reservation: quota, balance, image/keypair validity and stock changes can still cause rejection.
 
-The deployment fields stay locked while waiting. **Cancel waiting** stops the plan; it does not delete a submitted VM. Closing/reloading the view stops its polling and makes a best-effort cancellation request. An in-flight creation request can still finish. Waiting plans are kept only in backend memory; reopening the view never resumes them automatically. If an interrupted view left a waiting plan behind, use **Cancel waiting** before arming another. Replacing or removing the API key also cancels waiting.
+The deployment fields stay locked while waiting. The VM configuration (including optional cloud-init), monitoring status and last successful check time are saved in the host’s plugin-scoped JSON store. The API key remains in SDK secret storage. **Cancel waiting** durably disarms the plan; it does not delete a submitted VM. Replacing or removing the API key also durably cancels waiting. Reloading or closing the view stops its current timer without cancelling the saved plan. When FDO loads the plugin again, it restores the fields and waiting status and checks fresh stock automatically. No checks run while FDO is closed or the plugin is disabled.
 
-Successful submission shows the VM ID; follow provisioning and connection details in the Hyperstack console. Failures stop the plan. A timeout, malformed success or lost acknowledgement can mean the VM was created: check the console for the VM name before explicitly arming another plan. Creation is never automatically retried. API keys and raw provider errors remain backend-only.
+Successful submission shows the VM ID; follow provisioning and connection details in the Hyperstack console. Failures stop the plan. A timeout, malformed success or lost acknowledgement can mean the VM was created: check the console for the VM name before explicitly arming another plan. The backend flushes a consumed “creating” marker before contacting Hyperstack. If the app stops during creation, the restored status is **outcome unknown**, with no automatic retry. Submitted, failed and cancelled plans remain stopped across restarts. Storage failures block creation; there is no silent fallback to memory storage. Use **Cancel waiting** to discard invalid saved monitoring after restoring storage permissions, and verify any previously interrupted VM creation in Hyperstack before arming again. Creation is never automatically retried. API keys and raw provider errors remain backend-only.
 
 The API implementation follows Hyperstack's [Create virtual machines](https://docs.hyperstack.cloud/docs/api-reference/create-vms/), [Quickstart](https://docs.hyperstack.cloud/docs/api-reference/quickstart/) and [List environments](https://docs.hyperstack.cloud/docs/api-reference/list-environments/) documentation. The saved key needs permission to list environments, images and keypairs and create VMs in addition to checking stock. Catalog GET requests are paginated and bounded by a timeout; failures keep stock checks usable and block arming until options load. Only resource names and region/environment associations cross the UI bridge; public key material is excluded. Hyperstack remains authoritative for flavor/image compatibility, quotas and billing.
 

@@ -711,7 +711,7 @@ test("deployment clicks arm one VM, poll fresh stock and stop after creation", a
   assert.doesNotMatch(JSON.stringify(view.calls), /backend-only-key/);
 });
 
-test("disposing an armed view cancels waiting and never resumes creation", async (t) => {
+test("disposing an armed view stops its timer without cancelling durable waiting", async (t) => {
   const view = harness(async call => {
     if (call.handler === AVAILABILITY_HANDLERS.configuration) return {ok: true, configuration: ready};
     if (call.handler === AVAILABILITY_HANDLERS.armDeployment) return {ok: true, configuration: ready, deployment: {status: "waiting", launchId: "one", message: "Waiting"}};
@@ -731,7 +731,7 @@ test("disposing an armed view cancels waiting and never resumes creation", async
   const queued = [...view.timers.values()][0].callback;
   view.dispose();
   await settle();
-  assert.equal(view.calls.at(-1)?.handler, AVAILABILITY_HANDLERS.cancelDeployment);
+  assert.equal(view.calls.filter(call => call.handler === AVAILABILITY_HANDLERS.cancelDeployment).length, 0);
   assert.equal(view.timers.size, 0);
   const calls = view.calls.length;
   queued();
@@ -771,4 +771,31 @@ test("catalog failure leaves stock usable and disables deployment", async t => {
   assert.equal(view.document.get("deploy-arm").hasAttribute("disabled"), true);
   assert.match(view.document.get("deploy-options-status").textContent, /Could not load/);
   assert.doesNotMatch(view.document.get("deploy-options-status").textContent, /private-provider/);
+});
+
+
+test("a new view restores saved VM fields and resumes polling with the durable launch ID", async t => {
+  const calls: unknown[] = [];
+  const monitoring = {version: 1 as const, plan: {itemId: "region-a:gpu-a:flavor-a", name: "saved-vm", environment: "env", image: "Ubuntu", keypair: "key", publicIp: true, sshSource: "203.0.113.4/32", userData: "#cloud-config"}, state: {status: "waiting" as const, launchId: "saved-launch", message: "Monitoring restored"}, lastCheckedAt: "2026-11-02T10:00:00Z"};
+  const view = harness(async call => {
+    if (call.handler === AVAILABILITY_HANDLERS.configuration) return {ok: true, configuration: ready, monitoring};
+    assert.equal(call.handler, AVAILABILITY_HANDLERS.refresh);
+    calls.push(call.content);
+    return {...success(snapshot("VM", 0)), deployment: monitoring.state, monitoring};
+  });
+  t.after(() => view.dispose());
+  await settle();
+  assert.deepEqual(calls[0], {launchId: "saved-launch"});
+  assert.equal(view.document.get("deploy-name").value, "saved-vm");
+  assert.equal(view.document.get("deploy-type").value, monitoring.plan.itemId);
+  assert.equal(view.document.get("deploy-image").value, "Ubuntu");
+  assert.equal(view.document.get("deploy-keypair").value, "key");
+  assert.equal(view.document.get("deploy-public-ip").checked, true);
+  assert.equal(view.document.get("deploy-ssh-source").value, monitoring.plan.sshSource);
+  assert.equal(view.document.get("deploy-user-data").value, "#cloud-config");
+  assert.equal(view.document.get("deploy-name").hasAttribute("disabled"), true);
+  assert.equal(view.timers.size, 1);
+  view.fireTimer();
+  await settle();
+  assert.equal(calls.length, 2);
 });

@@ -618,7 +618,7 @@ function renderDeploymentControls(dom: DOM, classes: AvailabilityViewClasses): s
     labeledField(dom, "hyperstack-deploy-user-data", "Cloud-init script (optional)", dom.createElement("textarea", {id: "hyperstack-deploy-user-data", rows: "5", maxlength: "65535", placeholder: "#cloud-config", spellcheck: "false"}), classes),
     paragraph(dom, "Public IP and SSH access are optional. Set an explicit source CIDR to allow SSH. Without an inbound rule, configure access separately in Hyperstack.", {class: classes.muted ?? ""}),
     field("charges", "I authorize creation of one VM and the resulting Hyperstack charges", "checkbox"),
-    paragraph(dom, "Arming checks stock immediately, then every minute while this view stays open, including when hidden. Creation stops after one request. Closing or reloading the view stops automatic checks.", {class: classes.muted ?? ""}),
+    paragraph(dom, "Arming saves this configuration and checks stock immediately, then every minute while FDO is open, including when this plugin is hidden. Waiting resumes when the plugin loads after restart. Cancel waiting to stop permanently. Creation stops after one request.", {class: classes.muted ?? ""}),
     dom.createElement("div", {class: classes.controls ?? ""},
       command(dom, "hyperstack-deploy-arm", "Create one VM when available", true, classes, true),
       command(dom, "hyperstack-deploy-cancel", "Cancel waiting", true, classes),

@@ -1,3 +1,4 @@
+import {createMonitoringPersistence} from "./features/availability/monitoring";
 import {createDeploymentCatalogService} from "./features/availability/catalog";
 import {
   FDO_SDK,
@@ -225,7 +226,7 @@ const HYPERSTACK_PROVIDER: HyperstackProviderContract = {
 export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   private readonly pluginMetadata: PluginMetadata = {
     name: "Hyperstack availability",
-    version: "1.1.0",
+    version: "1.2.0",
     author: "AleXvWaN",
     description: "Check Hyperstack GPU stock and create one VM when a selected flavor becomes available.",
     icon: "server",
@@ -238,6 +239,8 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   declareCapabilities(): PluginCapability[] {
     return createCapabilityBundle([
       ...createSecretsCapabilityBundle(["get", "set", "delete"]),
+      "storage",
+      "storage.json",
       "system.network",
       "system.network.https",
       "system.network.scope.public-web-secure",
@@ -253,6 +256,7 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
     const backend = createAvailabilityBackend({
       secrets: this.secrets,
       service,
+      monitoring: createMonitoringPersistence(() => PluginRegistry.useStore("json")),
       deploymentService: createDeploymentService(),
       catalogService: createDeploymentCatalogService(),
     });

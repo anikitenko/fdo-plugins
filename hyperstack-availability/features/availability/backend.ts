@@ -1,8 +1,9 @@
+import type {MonitoringPersistence} from "./monitoring";
 import type {CatalogResult, DeploymentCatalog, DeploymentCatalogService} from "./catalog";
 import type {FDO_SDK} from "@anikitenko/fdo-sdk";
 import type {AvailabilitySnapshot} from "./logic";
 import {createDeploymentController} from "./deployment";
-import type {DeploymentService, DeploymentState} from "./deployment";
+import type {DeploymentService, DeploymentState, MonitoringRecord} from "./deployment";
 import type {
   AvailabilityService,
   AvailabilityServiceDiagnostics,
@@ -63,6 +64,7 @@ export interface AvailabilityBackendError {
 }
 
 export interface AvailabilityBackendFailure {
+  readonly monitoring?: MonitoringRecord;
   readonly ok: false;
   readonly error: AvailabilityBackendError;
   readonly configuration: AvailabilityConfiguration;
@@ -72,6 +74,7 @@ export type AvailabilityConfigurationResult =
   | {
       readonly ok: true;
       readonly configuration: AvailabilityConfiguration;
+      readonly monitoring?: MonitoringRecord;
     }
   | AvailabilityBackendFailure;
 
@@ -81,6 +84,7 @@ export type AvailabilityRefreshResult =
       readonly configuration: AvailabilityConfiguration;
       readonly snapshot: AvailabilitySnapshot;
       readonly deployment?: DeploymentState;
+      readonly monitoring?: MonitoringRecord;
     }
   | AvailabilityBackendFailure;
 
@@ -91,6 +95,7 @@ export interface AvailabilityBackendOptions {
   readonly service: AvailabilityService;
   readonly deploymentService?: DeploymentService;
   readonly catalogService?: DeploymentCatalogService;
+  readonly monitoring?: MonitoringPersistence;
 }
 
 export interface AvailabilityBackend {
@@ -327,6 +332,37 @@ export function createAvailabilityBackend(
   let catalog: DeploymentCatalog | null = null;
   let latestSnapshot: AvailabilitySnapshot | null = null;
   let queue: Promise<void> = Promise.resolve();
+  let monitoringLoaded = !options.monitoring;
+  let monitoringError = false;
+
+  async function restoreMonitoring(): Promise<boolean> {
+    if (monitoringLoaded && !monitoringError) return true;
+    try {
+      const saved = await options.monitoring?.load();
+      deployment?.restore(saved);
+      monitoringLoaded = true;
+      monitoringError = false;
+      return true;
+    } catch { monitoringError = true; return false; }
+  }
+
+  function monitoringView(): MonitoringRecord | undefined {
+    if (!deployment || !options.monitoring) return undefined;
+    const current = deployment.record();
+    if (!monitoringError) return current;
+    if (current.state.status === "submitted" || current.state.status === "uncertain") {
+      return {...current, state: {...current.state, message: `${current.state.message} The latest status could not be saved; verify the VM in Hyperstack after restart.`}};
+    }
+    return {version: 1, plan: null, state: {status: "failed", message: "Persistent monitoring storage is unavailable or invalid. Monitoring is stopped. Allow persistent storage in plugin permissions and reload, or use Cancel waiting to clear invalid saved monitoring."}};
+  }
+
+  async function persistMonitoring(): Promise<void> {
+    if (!options.monitoring || !deployment) return;
+    try {
+      if (!monitoringLoaded || monitoringError) throw new Error("Monitoring storage unavailable");
+      await options.monitoring.save(deployment.record());
+    } catch { monitoringError = true; throw new Error("Monitoring storage unavailable"); }
+  }
 
   function exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const result = queue.then(operation);
@@ -365,12 +401,17 @@ export function createAvailabilityBackend(
       });
     },
     getConfiguration(): Promise<AvailabilityConfigurationResult> {
-      return exclusive(inspectConfiguration);
+      return exclusive(async () => {
+        await restoreMonitoring();
+        return {...await inspectConfiguration(), monitoring: monitoringView()};
+      });
     },
 
     saveConnection(content: unknown): Promise<AvailabilityConfigurationResult> {
       return exclusive(async () => {
+        if (!await restoreMonitoring()) return storageFailure({code: "storage_unavailable"});
         deployment?.cancel();
+        try { await persistMonitoring(); } catch { return storageFailure({code: "storage_unavailable"}); }
         latestSnapshot = null;
         catalog = null;
         let apiKey: string | null;
@@ -404,7 +445,9 @@ export function createAvailabilityBackend(
 
     removeConnection(): Promise<AvailabilityConfigurationResult> {
       return exclusive(async () => {
+        if (!await restoreMonitoring()) return storageFailure({code: "storage_unavailable"});
         deployment?.cancel();
+        try { await persistMonitoring(); } catch { return storageFailure({code: "storage_unavailable"}); }
         latestSnapshot = null;
         catalog = null;
         try {
@@ -423,6 +466,7 @@ export function createAvailabilityBackend(
     armDeployment(content: unknown) {
       return exclusive(async () => {
         const inspected = await inspectConfiguration();
+        if (!await restoreMonitoring()) return {...inspected, monitoring: monitoringView(), deployment: monitoringView()?.state};
         if (!inspected.ok || !inspected.configuration.ready || !deployment) return inspected;
         if (options.catalogService) {
           const input = typeof content === "object" && content !== null ? content as Record<string, unknown> : {};
@@ -434,19 +478,33 @@ export function createAvailabilityBackend(
             return {...inspected, deployment: {status: "failed" as const, message: "Reload VM options and choose an environment, image and SSH key matching the selected region."}};
           }
         }
-        return {...inspected, deployment: deployment.arm(content, latestSnapshot)};
+        const state = deployment.arm(content, latestSnapshot);
+        try { await persistMonitoring(); }
+        catch { deployment.cancel(); return {...inspected, monitoring: monitoringView(), deployment: monitoringView()?.state}; }
+        return {...inspected, deployment: state, monitoring: monitoringView()};
       });
     },
 
     cancelDeployment() {
-      return exclusive(async () => ({
-        ...await inspectConfiguration(),
-        ...(deployment ? {deployment: deployment.cancel()} : {}),
-      }));
+      return exclusive(async () => {
+        const inspected = await inspectConfiguration();
+        if (!await restoreMonitoring()) {
+          // Explicit cancellation may discard an invalid saved plan. The new
+          // cancelled marker must still flush successfully before we report it.
+          deployment?.restore({version: 1, plan: null, state: {status: "cancelled"}});
+          monitoringLoaded = true;
+          monitoringError = false;
+        }
+        const state = deployment?.cancel();
+        try { await persistMonitoring(); }
+        catch { return {...inspected, monitoring: monitoringView(), deployment: monitoringView()?.state}; }
+        return {...inspected, deployment: state, monitoring: monitoringView()};
+      });
     },
 
     refresh(content?: unknown): Promise<AvailabilityRefreshResult> {
       return exclusive(async () => {
+        const monitoringReady = await restoreMonitoring();
         let apiKey: string | null;
         try {
           apiKey = await secrets.get(AVAILABILITY_SECRET_KEY);
@@ -472,14 +530,18 @@ export function createAvailabilityBackend(
 
           latestSnapshot = result.snapshot;
           const launchId = typeof content === "object" && content !== null && "launchId" in content ? content.launchId : undefined;
-          const deploymentState = deployment
-            ? await deployment.onSnapshot(apiKey, result.snapshot, launchId)
-            : undefined;
+          const deploymentState = deployment && monitoringReady
+            ? await deployment.onSnapshot(apiKey, result.snapshot, launchId, persistMonitoring)
+            : monitoringView()?.state;
+          if (monitoringReady) {
+            try { await persistMonitoring(); } catch { /* Creating marker remains durable; never retry the POST. */ }
+          }
           return {
             ok: true,
             configuration: current,
             snapshot: result.snapshot,
             ...(deploymentState ? {deployment: deploymentState} : {}),
+            monitoring: monitoringView(),
           };
         } catch {
           // The service normally returns failures as data. Unexpected thrown

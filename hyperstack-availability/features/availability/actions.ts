@@ -1,3 +1,4 @@
+import type {DeploymentPlan} from "./deployment";
 import type {DeploymentCatalog} from "./catalog";
 import {defineRenderOnLoadActions} from "@anikitenko/fdo-sdk";
 import type {AvailabilityConfiguration} from "./backend";
@@ -54,6 +55,7 @@ export function createAvailabilityActions() {
       let launchId: string | undefined;
       let deploymentUncertain = false;
       let catalog: DeploymentCatalog | null = null;
+      let restoredPlan: DeploymentPlan | null = null;
 
       // Native disclosure needs no frontend controller or event listeners.
       // Keep it outside the existing error paragraph to preserve valid markup.
@@ -352,6 +354,20 @@ export function createAvailabilityActions() {
       };
 
       const renderDeploymentOptions = () => {
+        // Wait for both catalogs before restoring selectors; never reapply saved
+        // values over subsequent user edits or ordinary polling updates.
+        const saved = catalog && snapshot ? restoredPlan : null;
+        if (saved) {
+          for (const field of ["name", "type", "environment", "image", "keypair", "user-data", "ssh-source"]) {
+            const node = get(`deploy-${field}`);
+            const next = field === "type" ? saved.itemId : field === "user-data" ? saved.userData ?? "" : field === "ssh-source" ? saved.sshSource ?? "" : saved[field as "name" | "environment" | "image" | "keypair"];
+            if (node && "value" in node) node.value = next;
+          }
+          for (const [field, checked] of [["public-ip", saved.publicIp], ["ssh", Boolean(saved.sshSource)]] as const) {
+            const node = get(`deploy-${field}`);
+            if (node && "checked" in node) node.checked = checked;
+          }
+        }
         const item = snapshot?.items.find(i => i.id === value("deploy-type"));
         const fill = (field: string, values: string[], placeholder: string) => {
           const node = get(`deploy-${field}`);
@@ -374,6 +390,7 @@ export function createAvailabilityActions() {
         fill("environment", catalog?.environments.filter(e => e.region === item?.region).map(e => e.name) ?? [], item ? "Choose an environment" : "Choose hardware first");
         fill("image", catalog?.images.filter(i => i.region === item?.region).map(i => i.name) ?? [], item ? "Choose an OS image" : "Choose hardware first");
         fill("keypair", catalog?.keypairs.filter(k => k.environment === value("deploy-environment")).map(k => k.name) ?? [], "Choose an SSH key");
+        if (saved) restoredPlan = null;
         if (catalog) text("deploy-options-status", !item ? "Options loaded. Select a GPU configuration to see regional resources."
           : !catalog.environments.some(e => e.region === item.region) ? "No environments in this region. Create one in the Hyperstack console, then reload options."
           : !catalog.keypairs.some(k => k.environment === value("deploy-environment")) ? "Choose an environment with an SSH key, or import a key in Hyperstack and reload options."
@@ -608,11 +625,24 @@ export function createAvailabilityActions() {
           if (!nextConfiguration) throw new Error("Invalid configuration response");
 
           configuration = nextConfiguration;
-          if (isRecord(response.deployment) && typeof response.deployment.message === "string") {
-            text("deploy-status", response.deployment.message);
-            if (operation === "armDeployment" && response.deployment.status === "waiting" && typeof response.deployment.launchId === "string") {
-              launchId = response.deployment.launchId;
-            } else if (response.deployment.status !== "waiting") {
+          const monitoring = isRecord(response.monitoring) ? response.monitoring : null;
+          if (operation === "configuration" && monitoring) {
+            const plan = monitoring.plan;
+            if (isRecord(plan) && ["itemId", "name", "environment", "image", "keypair"].every(f => typeof plan[f] === "string") && typeof plan.publicIp === "boolean"
+              && (plan.userData === undefined || typeof plan.userData === "string") && (plan.sshSource === undefined || typeof plan.sshSource === "string")) {
+              restoredPlan = plan as unknown as DeploymentPlan;
+            }
+            if (typeof monitoring.lastCheckedAt === "string" && Number.isFinite(Date.parse(monitoring.lastCheckedAt))) {
+              text("last-check", `Last check before restart: ${monitoring.lastCheckedAt}. Checking fresh stock…`);
+            }
+          }
+          const deployment = monitoring && isRecord(monitoring.state) ? monitoring.state : response.deployment;
+          if (isRecord(deployment) && typeof deployment.message === "string") {
+            text("deploy-status", deployment.message);
+            deploymentUncertain = deployment.status === "uncertain";
+            if (deployment.status === "waiting" && typeof deployment.launchId === "string") {
+              launchId = deployment.launchId;
+            } else if (deployment.status !== "waiting") {
               launchId = undefined;
               const acknowledgement = get("deploy-charges");
               if (acknowledgement && "checked" in acknowledgement) acknowledgement.checked = false;
@@ -708,9 +738,8 @@ export function createAvailabilityActions() {
       return () => {
         disposed = true;
         stopTimer();
-        // Best effort only. A disposed view also stops sending its launch ID,
-        // so later ordinary refreshes cannot resume an abandoned plan.
-        if (launchId) void request("hyperstack.availability.cancelDeployment", {}).catch(() => undefined);
+        // The durable plan survives view cleanup. Only an explicit Cancel
+        // waiting action disarms it; the next view restores its launch ID.
         launchId = undefined;
         root.removeEventListener("hyperstack-availability-command", onCommand);
         technicalText.textContent = "";

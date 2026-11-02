@@ -18,6 +18,13 @@ export interface DeploymentState {
   readonly vmId?: number;
 }
 
+export interface MonitoringRecord {
+  readonly version: 1;
+  readonly plan: DeploymentPlan | null;
+  readonly state: DeploymentState;
+  readonly lastCheckedAt?: string;
+}
+
 export type DeploymentResult = {
   readonly status: "submitted" | "failed" | "uncertain";
   readonly message: string;
@@ -151,14 +158,39 @@ export function createDeploymentService(options: {fetch?: DeploymentFetch; timeo
   };
 }
 
-/** Called under the availability backend's exclusive queue. The launch ID
- * binds polling to the view that armed the plan; reloads never resume it. */
+/** Called under the backend queue. Durable checkpoints precede VM creation. */
 export function createDeploymentController(service: DeploymentService) {
   let sequence = 0;
   let plan: DeploymentPlan | null = null;
+  let draft: DeploymentPlan | null = null;
+  let lastCheckedAt: string | undefined;
   let state: DeploymentState = {status: "idle", message: "No VM creation is armed."};
   return {
     state: (): DeploymentState => ({...state}),
+    record: (): MonitoringRecord => ({version: 1, plan: draft ? {...draft} : null, state: {...state}, ...(lastCheckedAt ? {lastCheckedAt} : {})}),
+    restore(input: unknown): void {
+      if (input === undefined || input === null) return;
+      if (!record(input) || input.version !== 1 || !record(input.state)) throw new Error("Invalid monitoring state");
+      const saved = input.state;
+      const status = saved.status;
+      if (!["idle", "waiting", "creating", "submitted", "failed", "uncertain", "cancelled"].includes(String(status))) throw new Error("Invalid monitoring status");
+      const restored = input.plan === null ? null : readPlan({... (record(input.plan) ? input.plan : {}), confirmCharges: true});
+      if (input.plan !== null && !restored) throw new Error("Invalid saved VM configuration");
+      if (status === "waiting" && (!restored || typeof saved.launchId !== "string" || !saved.launchId || saved.launchId.length > 100)) throw new Error("Invalid waiting state");
+      if (status === "submitted" && (typeof saved.vmId !== "number" || !Number.isSafeInteger(saved.vmId) || saved.vmId <= 0)) throw new Error("Invalid VM ID");
+      draft = restored;
+      plan = status === "waiting" ? restored : null;
+      lastCheckedAt = typeof input.lastCheckedAt === "string" && Number.isFinite(Date.parse(input.lastCheckedAt)) ? input.lastCheckedAt : undefined;
+      // Stored messages are never trusted or replayed. A crash after the durable
+      // creating marker may have happened after Hyperstack accepted the POST.
+      state = status === "waiting"
+        ? {status: "waiting", launchId: saved.launchId as string, message: `Monitoring restored for ${restored!.name} in environment ${restored!.environment}. Waiting for fresh stock; checks run while FDO is open.`}
+        : status === "creating" || status === "uncertain"
+          ? {status: "uncertain", message: "Previous creation outcome is unknown. Check Hyperstack for the VM before arming again. No automatic retry will be made."}
+          : status === "submitted"
+            ? {status: "submitted", vmId: saved.vmId as number, message: `VM #${saved.vmId} was scheduled for creation. Monitoring has stopped.`}
+            : {status: status as DeploymentState["status"], message: status === "cancelled" ? "Waiting cancelled. Monitoring has stopped." : status === "failed" ? "Previous monitoring attempt stopped. Review the configuration before arming again." : "No VM creation is armed."};
+    },
     arm(input: unknown, snapshot: AvailabilitySnapshot | null): DeploymentState {
       if (state.status === "waiting" || state.status === "creating") return {status: "failed", message: "A deployment is already armed. Cancel waiting before arming a new plan."};
       const next = readPlan(input);
@@ -166,24 +198,37 @@ export function createDeploymentController(service: DeploymentService) {
         return {status: "failed", message: "Select a checked VM type, complete all deployment fields and acknowledge charges."};
       }
       plan = next;
+      draft = next;
       const item = snapshot!.items.find(item => item.id === next.itemId)!;
-      state = {status: "waiting", launchId: String(++sequence), message: `Armed for one ${item.flavor} in ${item.region}, named ${next.name}, using environment ${next.environment}. Waiting for fresh stock; keep this view open. Cancel to stop waiting.`};
+      state = {status: "waiting", launchId: `${Date.now()}-${++sequence}`, message: `Armed for one ${item.flavor} in ${item.region}, named ${next.name}, using environment ${next.environment}. Waiting for fresh stock; checks run while FDO is open. Monitoring resumes after restart. Cancel to stop waiting.`};
       return this.state();
     },
     cancel(): DeploymentState {
+      if (state.status === "uncertain") {
+        plan = null;
+        state = {status: "cancelled", message: "Monitoring stopped. Verify the previous VM outcome in Hyperstack before arming another request."};
+      }
       if (state.status === "waiting") {
         plan = null;
         state = {status: "cancelled", message: "Waiting cancelled. No VM creation request was sent."};
       }
       return this.state();
     },
-    async onSnapshot(apiKey: string, snapshot: AvailabilitySnapshot, launchId: unknown): Promise<DeploymentState> {
+    async onSnapshot(apiKey: string, snapshot: AvailabilitySnapshot, launchId: unknown, checkpoint?: () => Promise<void>): Promise<DeploymentState> {
+      lastCheckedAt = snapshot.checkedAt;
       if (!plan || state.status !== "waiting" || launchId !== state.launchId) return this.state();
       const item = snapshot.items.find(entry => entry.id === plan!.itemId);
       if (!item || item.status !== "available") return this.state();
       const selected = plan;
       plan = null; // Consume BEFORE any network mutation, even on timeout.
       state = {status: "creating", message: "Submitting one VM creation request…"};
+      try {
+        // Flush the consumed marker BEFORE any request can reach Hyperstack.
+        await checkpoint?.();
+      } catch {
+        state = {status: "failed", message: "Monitoring storage could not be saved. No VM creation request was sent. Restore storage access before arming again."};
+        return this.state();
+      }
       try {
         state = {...await service.create(apiKey, selected, item)};
       } catch {
