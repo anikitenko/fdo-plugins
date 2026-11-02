@@ -95,8 +95,8 @@
 }
 
 .header {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -415,5 +415,50 @@
       transition: none !important;
       scroll-behavior: auto !important;
     }
+  }
+}
+/* Keep native checkboxes out of the full-width text-input rules. */
+.field:has(input[type="checkbox"]) {
+  flex: 1 1 240px;
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 10px 0;
+
+  & label { cursor: pointer; }
+  & input[type="checkbox"] {
+    flex: 0 0 18px;
+    width: 18px;
+    height: 18px;
+    min-height: 18px;
+    margin: 0 8px 0 0;
+    padding: 0;
+    accent-color: var(--hs-accent);
+  }
+}
+
+.header {
+  & h1 { grid-column: 1; margin-bottom: 0; }
+  & p { grid-column: 1; margin-bottom: 0; }
+  & button { grid-column: 2; grid-row: 1 / 3; }
+}
+
+.panel:has(#hyperstack-deploy-heading) {
+  border-top: 3px solid var(--hs-accent);
+  & > [data-deployment-options] {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+    align-items: start;
+  }
+  & textarea { resize: vertical; font-family: ui-monospace, monospace; }
+  & select { text-overflow: ellipsis; }
+  & h3 { margin-top: 24px; }
+}
+
+@media (max-width: 560px) {
+  .header {
+    grid-template-columns: minmax(0, 1fr);
+    & button { grid-column: 1; grid-row: auto; }
   }
 }

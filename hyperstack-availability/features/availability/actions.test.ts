@@ -147,11 +147,16 @@ class ViewDocument {
       results: "section",
       "results-body": "tbody",
       empty: "p",
+      "deploy-reload": "button",
+      "deploy-options-status": "p",
+      "deploy-ssh": "input",
+      "deploy-ssh-source": "input",
+      "deploy-user-data": "textarea",
       "deploy-type": "select",
       "deploy-name": "input",
-      "deploy-environment": "input",
-      "deploy-image": "input",
-      "deploy-keypair": "input",
+      "deploy-environment": "select",
+      "deploy-image": "select",
+      "deploy-keypair": "select",
       "deploy-public-ip": "input",
       "deploy-charges": "input",
       "deploy-arm": "button",
@@ -303,10 +308,10 @@ function success(data: AvailabilitySnapshot): AvailabilityRefreshResult {
   return {ok: true, configuration: ready, snapshot: data};
 }
 
-type Reply = AvailabilityConfigurationResult | AvailabilityRefreshResult;
+type Reply = AvailabilityConfigurationResult | AvailabilityRefreshResult | import("./catalog").CatalogResult;
 type Responder = (call: BridgeCall) => Promise<Reply>;
 
-function harness(respond: Responder) {
+function harness(respond: Responder, optionsReply?: import("./catalog").CatalogResult) {
   const document = new ViewDocument();
   const calls: BridgeCall[] = [];
   const timers = new Map<number, {callback: () => void; delay: number}>();
@@ -329,6 +334,13 @@ function harness(respond: Responder) {
         handler: String(input.handler),
         content: input.content,
       };
+      if (call.handler === AVAILABILITY_HANDLERS.deploymentOptions) {
+        return {success: true, data: optionsReply ?? {ok: true, catalog: {
+          environments: [{name: "env", region: "Region A"}],
+          images: [{name: "Ubuntu", region: "Region A"}],
+          keypairs: [{name: "key", environment: "env"}],
+        }}};
+      }
       calls.push(call);
       return {success: true, data: await respond(call)};
     },
@@ -461,7 +473,7 @@ test("connection and refresh clicks use backend operations and prevent duplicate
   save.resolve({ok: true, configuration: ready});
   await settle();
   assert.equal(view.document.get("api-key").value, "");
-  assert.equal(view.document.get("refresh").hasAttribute("disabled"), false);
+  assert.equal(view.document.get("refresh").hasAttribute("disabled"), true); // Automatic first stock check is in flight.
   assert.match(view.document.get("connection-status").textContent, /saved/i);
   assert.equal(view.document.get("connection-help").textContent, ready.message);
   assert.equal(view.document.get("error").hidden, true);
@@ -549,8 +561,7 @@ test("refresh failures recover safely and lifecycle cleanup stops updates", asyn
   t.after(() => view.dispose());
   await settle();
 
-  view.click("refresh");
-  await settle();
+  // The initial stock check runs automatically after options preload.
   assert.match(view.document.get("results-body").textContent, /Original VM/);
   assert.equal(view.document.get("stale").hidden, true);
 
@@ -726,4 +737,38 @@ test("disposing an armed view cancels waiting and never resumes creation", async
   queued();
   await settle();
   assert.equal(view.calls.length, calls);
+});
+
+
+test("preloaded selections follow region and environment changes and clear removed resources", async t => {
+  const stock = snapshot("VM", 0);
+  const other = {...stock.items[0], id: "other", region: "Region B"};
+  const view = harness(async call => call.handler === AVAILABILITY_HANDLERS.configuration
+    ? {ok: true, configuration: ready}
+    : success({...stock, items: [...stock.items, other]}), {ok: true, catalog: {
+      environments: [{name: "env-a", region: "Region A"}, {name: "env-b", region: "Region B"}],
+      images: [{name: "Ubuntu A", region: "Region A"}, {name: "Ubuntu B", region: "Region B"}],
+      keypairs: [{name: "key-a", environment: "env-a"}, {name: "key-b", environment: "env-b"}],
+    }});
+  t.after(() => view.dispose());
+  await settle();
+  view.change("deploy-type", stock.items[0].id);
+  assert.equal(view.document.get("deploy-environment").value, "env-a");
+  assert.equal(view.document.get("deploy-image").value, "Ubuntu A");
+  assert.equal(view.document.get("deploy-keypair").value, "key-a");
+  view.change("deploy-type", "other");
+  assert.equal(view.document.get("deploy-environment").value, "env-b");
+  assert.equal(view.document.get("deploy-keypair").value, "key-b");
+  assert.doesNotMatch(view.document.get("deploy-image").textContent, /Ubuntu A/);
+});
+
+test("catalog failure leaves stock usable and disables deployment", async t => {
+  const view = harness(async call => call.handler === AVAILABILITY_HANDLERS.configuration
+    ? {ok: true, configuration: ready} : success(snapshot("VM", 1)), {ok: false, message: "private-provider-error"});
+  t.after(() => view.dispose());
+  await settle();
+  assert.match(view.document.get("results-body").textContent, /VM/);
+  assert.equal(view.document.get("deploy-arm").hasAttribute("disabled"), true);
+  assert.match(view.document.get("deploy-options-status").textContent, /Could not load/);
+  assert.doesNotMatch(view.document.get("deploy-options-status").textContent, /private-provider/);
 });

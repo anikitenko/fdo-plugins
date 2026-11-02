@@ -1,3 +1,4 @@
+import type {CatalogResult, DeploymentCatalog, DeploymentCatalogService} from "./catalog";
 import type {FDO_SDK} from "@anikitenko/fdo-sdk";
 import type {AvailabilitySnapshot} from "./logic";
 import {createDeploymentController} from "./deployment";
@@ -10,6 +11,7 @@ import type {
 } from "./service";
 
 export const AVAILABILITY_HANDLERS = {
+  deploymentOptions: "hyperstack.availability.deploymentOptions",
   configuration: "hyperstack.availability.configuration",
   saveConnection: "hyperstack.availability.saveConnection",
   removeConnection: "hyperstack.availability.removeConnection",
@@ -88,9 +90,11 @@ export interface AvailabilityBackendOptions {
   /** Construct the service in backend code, never from iframe options. */
   readonly service: AvailabilityService;
   readonly deploymentService?: DeploymentService;
+  readonly catalogService?: DeploymentCatalogService;
 }
 
 export interface AvailabilityBackend {
+  deploymentOptions(): Promise<CatalogResult>;
   getConfiguration(): Promise<AvailabilityConfigurationResult>;
   /** UI_MESSAGE content is passed directly: {apiKey: string}. */
   saveConnection(content: unknown): Promise<AvailabilityConfigurationResult>;
@@ -320,6 +324,7 @@ export function createAvailabilityBackend(
 ): AvailabilityBackend {
   const {secrets, service} = options;
   const deployment = options.deploymentService ? createDeploymentController(options.deploymentService) : null;
+  let catalog: DeploymentCatalog | null = null;
   let latestSnapshot: AvailabilitySnapshot | null = null;
   let queue: Promise<void> = Promise.resolve();
 
@@ -347,6 +352,18 @@ export function createAvailabilityBackend(
   }
 
   return {
+    deploymentOptions() {
+      return exclusive(async () => {
+        try {
+          const apiKey = await secrets.get(AVAILABILITY_SECRET_KEY);
+          if (!validCredential(apiKey) || !options.catalogService) return {ok: false as const, message: "Save an API key to load VM options."};
+          catalog = null;
+          const result = await options.catalogService.load(apiKey);
+          if (result.ok) catalog = result.catalog;
+          return result;
+        } catch { return {ok: false as const, message: "Could not access credentials to load VM options."}; }
+      });
+    },
     getConfiguration(): Promise<AvailabilityConfigurationResult> {
       return exclusive(inspectConfiguration);
     },
@@ -355,6 +372,7 @@ export function createAvailabilityBackend(
       return exclusive(async () => {
         deployment?.cancel();
         latestSnapshot = null;
+        catalog = null;
         let apiKey: string | null;
         try {
           apiKey = readCredentialInput(content);
@@ -388,6 +406,7 @@ export function createAvailabilityBackend(
       return exclusive(async () => {
         deployment?.cancel();
         latestSnapshot = null;
+        catalog = null;
         try {
           // A missing key is already the requested state.
           await secrets.delete(AVAILABILITY_SECRET_KEY);
@@ -405,6 +424,16 @@ export function createAvailabilityBackend(
       return exclusive(async () => {
         const inspected = await inspectConfiguration();
         if (!inspected.ok || !inspected.configuration.ready || !deployment) return inspected;
+        if (options.catalogService) {
+          const input = typeof content === "object" && content !== null ? content as Record<string, unknown> : {};
+          const item = latestSnapshot?.items.find(i => i.id === input.itemId);
+          if (!catalog || !item
+            || !catalog.environments.some(e => e.name === input.environment && e.region === item.region)
+            || !catalog.images.some(i => i.name === input.image && i.region === item.region)
+            || !catalog.keypairs.some(k => k.name === input.keypair && k.environment === input.environment)) {
+            return {...inspected, deployment: {status: "failed" as const, message: "Reload VM options and choose an environment, image and SSH key matching the selected region."}};
+          }
+        }
         return {...inspected, deployment: deployment.arm(content, latestSnapshot)};
       });
     },

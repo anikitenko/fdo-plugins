@@ -1,3 +1,4 @@
+import {createDeploymentCatalogService} from "./features/availability/catalog";
 import {
   FDO_SDK,
   PluginRegistry,
@@ -253,7 +254,10 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
       secrets: this.secrets,
       service,
       deploymentService: createDeploymentService(),
+      catalogService: createDeploymentCatalogService(),
     });
+
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.deploymentOptions, () => backend.deploymentOptions());
 
     PluginRegistry.registerHandler(
       AVAILABILITY_HANDLERS.configuration,

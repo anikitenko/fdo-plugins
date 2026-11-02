@@ -1,3 +1,4 @@
+import type {DeploymentCatalog} from "./catalog";
 import {defineRenderOnLoadActions} from "@anikitenko/fdo-sdk";
 import type {AvailabilityConfiguration} from "./backend";
 import type {AvailabilityItem, AvailabilitySnapshot} from "./logic";
@@ -25,6 +26,9 @@ export function createAvailabilityActions() {
       },
     },
     bindings: [
+      {selector: "#hyperstack-deploy-reload", event: "click", handler: "command"},
+      {selector: "#hyperstack-deploy-type", event: "change", handler: "command"},
+      {selector: "#hyperstack-deploy-environment", event: "change", handler: "command"},
       {selector: "#hyperstack-save-connection", event: "click", handler: "command"},
       {selector: "#hyperstack-clear-connection", event: "click", handler: "command"},
       {selector: "#hyperstack-refresh", event: "click", handler: "command"},
@@ -49,6 +53,7 @@ export function createAvailabilityActions() {
       let pollingSeconds = 0;
       let launchId: string | undefined;
       let deploymentUncertain = false;
+      let catalog: DeploymentCatalog | null = null;
 
       // Native disclosure needs no frontend controller or event listeners.
       // Keep it outside the existing error paragraph to preserve valid markup.
@@ -105,10 +110,11 @@ export function createAvailabilityActions() {
         disable("save-connection", busy);
         disable("clear-connection", busy || !configuration?.configured);
         disable("refresh", busy || !ready);
-        disable("deploy-arm", busy || !ready || !snapshot || Boolean(launchId) || deploymentUncertain);
+        disable("deploy-arm", busy || !ready || !snapshot || !catalog || Boolean(launchId) || deploymentUncertain);
+        disable("deploy-reload", busy || !ready || Boolean(launchId));
         disable("deploy-cancel", busy || !ready);
-        for (const field of ["type", "name", "environment", "image", "keypair", "public-ip", "charges"]) {
-          disable(`deploy-${field}`, busy || Boolean(launchId) || (field === "type" && !snapshot));
+        for (const field of ["type", "name", "environment", "image", "keypair", "public-ip", "charges", "ssh", "ssh-source", "user-data"]) {
+          disable(`deploy-${field}`, busy || !ready || Boolean(launchId) || (["environment", "image", "keypair"].includes(field) && !catalog) || (field === "type" && !snapshot));
         }
         text("refresh", busy ? "Checking…" : "Check availability");
         text("save-connection", busy ? "Please wait…" : "Save API key");
@@ -345,6 +351,35 @@ export function createAvailabilityActions() {
         select.replaceChildren(fragment);
       };
 
+      const renderDeploymentOptions = () => {
+        const item = snapshot?.items.find(i => i.id === value("deploy-type"));
+        const fill = (field: string, values: string[], placeholder: string) => {
+          const node = get(`deploy-${field}`);
+          if (!node) return;
+          const previous = value(`deploy-${field}`);
+          const choices = [...new Set(values)].sort((a, b) => a.localeCompare(b));
+          const selected = choices.includes(previous) ? previous : choices.length === 1 ? choices[0] : "";
+          const fragment = document.createDocumentFragment();
+          for (const choice of ["", ...choices]) {
+            const option = document.createElement("option");
+            option.value = choice;
+            option.textContent = choice || placeholder;
+            option.selected = choice === selected;
+            fragment.appendChild(option);
+          }
+          node.replaceChildren(fragment);
+          // Explicit assignment also clears stale selections after region changes.
+          if ("value" in node) node.value = selected;
+        };
+        fill("environment", catalog?.environments.filter(e => e.region === item?.region).map(e => e.name) ?? [], item ? "Choose an environment" : "Choose hardware first");
+        fill("image", catalog?.images.filter(i => i.region === item?.region).map(i => i.name) ?? [], item ? "Choose an OS image" : "Choose hardware first");
+        fill("keypair", catalog?.keypairs.filter(k => k.environment === value("deploy-environment")).map(k => k.name) ?? [], "Choose an SSH key");
+        if (catalog) text("deploy-options-status", !item ? "Options loaded. Select a GPU configuration to see regional resources."
+          : !catalog.environments.some(e => e.region === item.region) ? "No environments in this region. Create one in the Hyperstack console, then reload options."
+          : !catalog.keypairs.some(k => k.environment === value("deploy-environment")) ? "Choose an environment with an SSH key, or import a key in Hyperstack and reload options."
+          : "Options loaded from Hyperstack. Review the configuration before arming.");
+      };
+
       const renderResults = () => {
         if (disposed || !snapshot) return;
         const type = get("deploy-type");
@@ -364,6 +399,8 @@ export function createAvailabilityActions() {
             options.appendChild(option);
           }
           type.replaceChildren(options);
+          if ("value" in type) type.value = snapshot.items.some(i => i.id === selected) ? selected : "";
+          renderDeploymentOptions();
         }
         const region = value("region");
         const gpu = value("gpu");
@@ -491,7 +528,7 @@ export function createAvailabilityActions() {
       };
 
       const run = async (
-        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh" | "armDeployment" | "cancelDeployment",
+        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh" | "armDeployment" | "cancelDeployment" | "deploymentOptions",
       ): Promise<void> => {
         if (disposed || busy) return;
         if (operation === "refresh" && !configuration?.ready) return;
@@ -513,7 +550,10 @@ export function createAvailabilityActions() {
             text("deploy-status", "Select a VM type, complete all deployment fields and acknowledge charges.");
             return;
           }
-          content = {itemId, name, environment, image, keypair, publicIp: checked("deploy-public-ip"), confirmCharges: true};
+          content = {itemId, name, environment, image, keypair, publicIp: checked("deploy-public-ip"), confirmCharges: true,
+            ...(checked("deploy-ssh") ? {sshSource: value("deploy-ssh-source").trim()} : {}),
+            ...(value("deploy-user-data").trim() ? {userData: value("deploy-user-data")} : {}),
+          };
         }
         if (operation === "cancelDeployment") {
           launchId = undefined;
@@ -530,10 +570,13 @@ export function createAvailabilityActions() {
           content = {apiKey: key};
         }
         if (operation === "saveConnection" || operation === "removeConnection") {
+          catalog = null;
+          renderDeploymentOptions();
           launchId = undefined;
           text("deploy-status", "Waiting cancelled because the connection changed.");
         }
 
+        if (operation === "deploymentOptions") text("deploy-options-status", "Loading VM options…");
         busy = true;
         stopTimer();
         setError("");
@@ -546,6 +589,20 @@ export function createAvailabilityActions() {
           if (disposed) return;
           if (!isRecord(response) || typeof response.ok !== "boolean") {
             throw new Error("Invalid application response");
+          }
+          if (operation === "deploymentOptions") {
+            if (response.ok && isRecord(response.catalog)
+              && Array.isArray(response.catalog.environments) && response.catalog.environments.every(e => isRecord(e) && typeof e.name === "string" && typeof e.region === "string")
+              && Array.isArray(response.catalog.images) && response.catalog.images.every(i => isRecord(i) && typeof i.name === "string" && typeof i.region === "string")
+              && Array.isArray(response.catalog.keypairs) && response.catalog.keypairs.every(k => isRecord(k) && typeof k.name === "string" && typeof k.environment === "string")) {
+              catalog = response.catalog as unknown as DeploymentCatalog;
+              renderDeploymentOptions();
+            } else {
+              catalog = null;
+              renderDeploymentOptions();
+              text("deploy-options-status", "Could not load VM options. Check permissions for environments, images and keypairs, then reload options.");
+            }
+            return;
           }
           const nextConfiguration = readConfiguration(response.configuration);
           if (!nextConfiguration) throw new Error("Invalid configuration response");
@@ -592,6 +649,9 @@ export function createAvailabilityActions() {
             updateControls();
             schedule();
             if (operation === "armDeployment" && launchId) void run("refresh");
+            if ((operation === "configuration" || operation === "saveConnection") && configuration?.ready) {
+              void run("deploymentOptions").then(() => run("refresh"));
+            }
           }
         }
       };
@@ -607,6 +667,14 @@ export function createAvailabilityActions() {
             break;
           case "hyperstack-refresh":
             void run("refresh");
+            break;
+          case "hyperstack-deploy-reload":
+            text("deploy-options-status", "Loading VM options…");
+            void run("deploymentOptions");
+            break;
+          case "hyperstack-deploy-type":
+          case "hyperstack-deploy-environment":
+            renderDeploymentOptions();
             break;
           case "hyperstack-deploy-arm":
             void run("armDeployment");

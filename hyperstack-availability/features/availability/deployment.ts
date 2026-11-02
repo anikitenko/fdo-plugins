@@ -7,6 +7,8 @@ export interface DeploymentPlan {
   readonly image: string;
   readonly keypair: string;
   readonly publicIp: boolean;
+  readonly sshSource?: string;
+  readonly userData?: string;
 }
 
 export interface DeploymentState {
@@ -36,6 +38,13 @@ const API = "https://infrahub-api.nexgencloud.com/v1/core";
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+export function validIpv4Cidr(value: string): boolean {
+  const parts = value.split("/");
+  return parts.length === 2 && /^(?:[0-9]|[12][0-9]|3[0-2])$/.test(parts[1])
+    && parts[0].split(".").length === 4
+    && parts[0].split(".").every(o => /^(0|[1-9][0-9]{0,2})$/.test(o) && Number(o) <= 255);
+}
+
 function readPlan(input: unknown): DeploymentPlan | null {
   if (!record(input) || input.confirmCharges !== true || typeof input.publicIp !== "boolean") return null;
   const fields = ["itemId", "name", "environment", "image", "keypair"] as const;
@@ -44,7 +53,11 @@ function readPlan(input: unknown): DeploymentPlan | null {
     const max = field === "itemId" ? 2048 : field === "image" ? 255 : 50;
     if (typeof value !== "string" || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/.test(value)) return null;
   }
+  if (input.sshSource !== undefined && (typeof input.sshSource !== "string" || !validIpv4Cidr(input.sshSource))) return null;
+  if (input.userData !== undefined && (typeof input.userData !== "string" || new TextEncoder().encode(input.userData).length > 65535)) return null;
   return {
+    ...(typeof input.sshSource === "string" ? {sshSource: input.sshSource} : {}),
+    ...(typeof input.userData === "string" ? {userData: input.userData} : {}),
     itemId: input.itemId as string,
     name: (input.name as string).trim(),
     environment: (input.environment as string).trim(),
@@ -111,7 +124,8 @@ export function createDeploymentService(options: {fetch?: DeploymentFetch; timeo
               key_name: plan.keypair,
               count: 1,
               assign_floating_ip: plan.publicIp,
-              security_rules: [],
+              security_rules: plan.sshSource ? [{direction: "ingress", protocol: "tcp", ethertype: "IPv4", remote_ip_prefix: plan.sshSource, port_range_min: 22, port_range_max: 22}] : [],
+              ...(plan.userData ? {user_data: plan.userData} : {}),
             }),
           });
           if (!created.ok) {

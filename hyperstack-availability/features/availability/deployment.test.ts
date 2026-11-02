@@ -154,3 +154,22 @@ test("connection replacement cancels waiting and requires a new stock check", as
   await backend.refresh({launchId: armed?.launchId});
   assert.equal(calls, 0);
 });
+
+
+test("SSH CIDR validation blocks invalid plans and optional cloud-init maps to documented payload fields", async () => {
+  const controller = createDeploymentController({create: async () => ({status: "submitted", message: "Created"})});
+  for (const sshSource of ["", "0.0.0.0", "256.1.1.1/32", "1.2.3.4/33", "1.2.3.4/-1"]) {
+    assert.equal(controller.arm({...input, sshSource}, snapshot()).status, "failed");
+  }
+  assert.equal(controller.arm({...input, userData: "😀".repeat(20000)}, snapshot()).status, "failed");
+  let payload: Record<string, unknown> = {};
+  const service = createDeploymentService({fetch: async (_url, init) => {
+    if (init.method === "GET") return response(environments);
+    payload = JSON.parse(String(init.body));
+    return response({status: true, instances: [{id: 42}]});
+  }});
+  const result = await service.create("secret", {...plan, sshSource: "203.0.113.4/32", userData: "#cloud-config\npackages: [htop]"}, item);
+  assert.equal(result.status, "submitted");
+  assert.equal(payload.user_data, "#cloud-config\npackages: [htop]");
+  assert.deepEqual(payload.security_rules, [{direction: "ingress", protocol: "tcp", ethertype: "IPv4", remote_ip_prefix: "203.0.113.4/32", port_range_min: 22, port_range_max: 22}]);
+});

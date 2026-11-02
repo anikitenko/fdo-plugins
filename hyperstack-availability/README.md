@@ -51,8 +51,8 @@ Automatic refresh supports manual checks or intervals of one, five or ten minute
 ## Create one VM when stock becomes available
 
 1. Check availability, then choose the exact flavor and region in **Create a VM when available**. Out-of-stock types can be selected.
-2. Enter a new VM name, an **existing environment name in that region**, the exact **API image name**, and an **existing SSH keypair name** belonging to the environment. Create the environment and import the public SSH key in Hyperstack beforehand.
-3. Choose whether to assign a public IP. No inbound firewall rules are added; configure network access in Hyperstack.
+2. After connecting, the plugin preloads environments, grouped OS images and SSH keys from the API, and checks stock automatically. Choose hardware and a region, then select an environment and image in that region and an SSH key from that environment. Enter a new VM name. Use **Reload VM options** after creating resources in Hyperstack.
+3. Optionally assign a public IP, enable inbound SSH with an explicit IPv4 source CIDR (for example your IP with `/32`), and supply a cloud-init script. SSH is off by default; enabling it adds only an ingress TCP port 22 rule. Otherwise configure network access in Hyperstack.
 4. Acknowledge the resulting Hyperstack charges, then choose **Create one VM when available**. This authorizes one creation request, including immediate creation if a fresh check reports stock.
 
 An armed plan checks immediately, then every minute while the view stays open (including when hidden), independently of the availability refresh selector. The backend checks fresh availability for the exact selected type, verifies the environment's region, and sends a single creation request with `count: 1`. Availability is not a reservation: quota, balance, image/keypair validity and stock changes can still cause rejection.
@@ -61,7 +61,7 @@ The deployment fields stay locked while waiting. **Cancel waiting** stops the pl
 
 Successful submission shows the VM ID; follow provisioning and connection details in the Hyperstack console. Failures stop the plan. A timeout, malformed success or lost acknowledgement can mean the VM was created: check the console for the VM name before explicitly arming another plan. Creation is never automatically retried. API keys and raw provider errors remain backend-only.
 
-The API implementation follows Hyperstack's [Create virtual machines](https://docs.hyperstack.cloud/docs/api-reference/create-vms/), [Quickstart](https://docs.hyperstack.cloud/docs/api-reference/quickstart/) and [List environments](https://docs.hyperstack.cloud/docs/api-reference/list-environments/) documentation. The saved key needs permission to read environments and create VMs in addition to checking stock.
+The API implementation follows Hyperstack's [Create virtual machines](https://docs.hyperstack.cloud/docs/api-reference/create-vms/), [Quickstart](https://docs.hyperstack.cloud/docs/api-reference/quickstart/) and [List environments](https://docs.hyperstack.cloud/docs/api-reference/list-environments/) documentation. The saved key needs permission to list environments, images and keypairs and create VMs in addition to checking stock. Catalog GET requests are paginated and bounded by a timeout; failures keep stock checks usable and block arming until options load. Only resource names and region/environment associations cross the UI bridge; public key material is excluded. Hyperstack remains authoritative for flavor/image compatibility, quotas and billing.
 
 ## Development verification
 
