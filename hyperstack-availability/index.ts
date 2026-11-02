@@ -1,4 +1,5 @@
-import {createMonitoringPersistence} from "./features/availability/monitoring";
+import {createAvailabilityRuntime} from "./features/availability/runtime";
+import {createMonitoringPersistence, createRefreshPreferences} from "./features/availability/monitoring";
 import {createDeploymentCatalogService} from "./features/availability/catalog";
 import {
   FDO_SDK,
@@ -10,7 +11,6 @@ import type {PluginCapability, PluginMetadata} from "@anikitenko/fdo-sdk";
 import {renderView} from "./render";
 import {
   AVAILABILITY_HANDLERS,
-  createAvailabilityBackend,
 } from "./features/availability/backend";
 import {createAvailabilityService} from "./features/availability/service";
 import type {HyperstackProviderContract} from "./features/availability/service";
@@ -224,9 +224,10 @@ const HYPERSTACK_PROVIDER: HyperstackProviderContract = {
 };
 
 export default class HyperstackAvailabilityPlugin extends FDO_SDK {
+  private availabilityRuntime?: ReturnType<typeof createAvailabilityRuntime>;
   private readonly pluginMetadata: PluginMetadata = {
     name: "Hyperstack availability",
-    version: "1.2.0",
+    version: "1.3.0",
     author: "AleXvWaN",
     description: "Check Hyperstack GPU stock and create one VM when a selected flavor becomes available.",
     icon: "server",
@@ -248,12 +249,14 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   }
 
   init(): void {
+    this.availabilityRuntime?.dispose();
     const service = createAvailabilityService({
       provider: HYPERSTACK_PROVIDER,
       timeoutMs: 15_000,
     });
 
-    const backend = createAvailabilityBackend({
+    const backend = createAvailabilityRuntime({
+      preferences: createRefreshPreferences(() => PluginRegistry.useStore("json")),
       secrets: this.secrets,
       service,
       monitoring: createMonitoringPersistence(() => PluginRegistry.useStore("json")),
@@ -261,7 +264,11 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
       catalogService: createDeploymentCatalogService(),
     });
 
-    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.deploymentOptions, () => backend.deploymentOptions());
+    this.availabilityRuntime = backend;
+    void backend.start();
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.state, () => backend.getState());
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.setPolling, (content: unknown) => backend.setPolling(content));
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.deploymentOptions, (content: unknown) => backend.deploymentOptions(content));
 
     PluginRegistry.registerHandler(
       AVAILABILITY_HANDLERS.configuration,
@@ -280,7 +287,7 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
 
     PluginRegistry.registerHandler(
       AVAILABILITY_HANDLERS.refresh,
-      (content: unknown) => backend.refresh(content),
+      () => backend.refresh(),
     );
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.armDeployment, (content: unknown) => backend.armDeployment(content));
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.cancelDeployment, () => backend.cancelDeployment());

@@ -14,8 +14,15 @@ try {
   const toolPath = path.join(temporary, 'host.cjs');
   await build({
     stdin: {contents: `export {EsbuildVirtualFsPlugin} from ${JSON.stringify(path.join(host, 'src/utils/esbuild/plugins/virtual-fs.js'))}; export {runPluginWorkspaceTests} from ${JSON.stringify(path.join(host, 'src/utils/plugins/runtime/pluginTestRunner.js'))};`, resolveDir: host},
-    bundle: true, platform: 'node', format: 'cjs', outfile: toolPath,
+    bundle: true, platform: 'node', format: 'cjs', outfile: toolPath, external: [require.resolve('esbuild')],
     plugins: [{name: 'host-paths', setup(bundle) {
+      // Workspace verification uses source dependencies, not packaged dist/main.
+      bundle.onResolve({filter: /pluginRuntimeBundle$/}, () => ({path: 'workspace-runtime', namespace: 'workspace-runtime'}));
+      bundle.onLoad({filter: /.*/, namespace: 'workspace-runtime'}, () => ({contents: `
+        export const getHostPluginNodeModulesPath = () => ${JSON.stringify(path.join(host, 'node_modules'))};
+        export const ensureExecutableEsbuildBinary = () => {};
+        export const loadHostEsbuild = () => require(${JSON.stringify(require.resolve('esbuild'))});
+      `, loader: 'js'}));
       bundle.onResolve({filter: /^electron$/}, () => ({path: 'electron', namespace: 'host-paths'}));
       bundle.onLoad({filter: /.*/, namespace: 'host-paths'}, () => ({contents: `export const app = {isPackaged: false, getAppPath: () => ${JSON.stringify(host)}, getPath: () => ${JSON.stringify(temporary)}};`, loader: 'js'}));
     }}],

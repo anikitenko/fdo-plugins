@@ -54,6 +54,12 @@ export function createAvailabilityActions() {
       let stale = false;
       let timer: number | undefined;
       let pollingSeconds = 0;
+      let readingState = false;
+      let stateReadVersion = 0;
+      let backendRefreshing = false;
+      let backendErrorVisible = false;
+      let hydrated = false;
+      let catalogAttempted = false;
       let launchId: string | undefined;
       let deploymentUncertain = false;
       let catalog: DeploymentCatalog | null = null;
@@ -128,9 +134,10 @@ export function createAvailabilityActions() {
         }
         text("refresh", busy ? "Checking…" : "Check availability");
         text("save-connection", busy ? "Please wait…" : "Save API key");
-        show("loading", busy);
+        show("loading", busy || backendRefreshing);
+        text("loading", backendRefreshing ? "Refreshing availability in the background…" : "Checking Hyperstack availability…");
         get("connection")?.setAttribute("aria-busy", String(busy));
-        get("results")?.setAttribute("aria-busy", String(busy));
+        get("results")?.setAttribute("aria-busy", String(busy || backendRefreshing));
 
         if (configuration) {
           text(
@@ -273,6 +280,9 @@ export function createAvailabilityActions() {
             break;
           case "storage_locked":
             message = "Unlock secure credential storage, then retry saving or checking.";
+            break;
+          case "refresh_settings_unavailable":
+            message = "Could not restore or save the automatic refresh setting. Restore persistent storage access, then choose the interval again.";
             break;
           case "storage_unavailable":
             message = "Secure credential storage is unavailable. Restore access, then retry.";
@@ -526,13 +536,12 @@ export function createAvailabilityActions() {
 
       const schedule = () => {
         stopTimer();
-        const interval = launchId ? 60 : pollingSeconds;
-        if (disposed || busy || interval === 0 || !configuration?.ready) return;
+        if (disposed || busy) return;
         timer = window.setTimeout(() => {
           timer = undefined;
-          if (!disposed && (launchId || !document.hidden)) void run("refresh");
+          if (!disposed && !document.hidden) void run("state");
           else schedule();
-        }, interval * 1000);
+        }, 5000);
       };
 
       const request = async (
@@ -553,9 +562,11 @@ export function createAvailabilityActions() {
       };
 
       const run = async (
-        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh" | "armDeployment" | "cancelDeployment" | "deploymentOptions",
+        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh" | "armDeployment" | "cancelDeployment" | "deploymentOptions" | "state" | "setPolling",
       ): Promise<void> => {
-        if (disposed || busy) return;
+        const quiet = operation === "state";
+        if (disposed || busy || (quiet && readingState)) return;
+        const readVersion = ++stateReadVersion;
         if (operation === "refresh" && !configuration?.ready) return;
 
         let content: Readonly<Record<string, unknown>> = {};
@@ -563,7 +574,8 @@ export function createAvailabilityActions() {
           const node = get(name);
           return Boolean(node && "checked" in node && node.checked === true);
         };
-        if (operation === "refresh" && launchId) content = {launchId};
+        if (operation === "setPolling") content = {seconds: Number(value("polling"))};
+        if (operation === "deploymentOptions") content = {force: catalogAttempted};
         if (operation === "armDeployment") {
           if (!configuration?.ready || launchId || deploymentUncertain) return;
           const itemId = value("deploy-type");
@@ -595,27 +607,34 @@ export function createAvailabilityActions() {
           content = {apiKey: key};
         }
         if (operation === "saveConnection" || operation === "removeConnection") {
+          markStale(Boolean(snapshot));
           catalog = null;
+          catalogAttempted = false;
           renderDeploymentOptions();
           launchId = undefined;
           text("deploy-status", "Waiting cancelled because the connection changed.");
         }
 
         if (operation === "deploymentOptions") text("deploy-options-status", "Loading VM options…");
-        busy = true;
+        if (quiet) readingState = true;
+        else {
+          busy = true;
+          backendErrorVisible = false;
+          setError("");
+          updateControls();
+        }
         stopTimer();
-        setError("");
-        updateControls();
         try {
           const response: unknown = await request(
             `hyperstack.availability.${operation}`,
             content,
           );
-          if (disposed) return;
+          if (disposed || (quiet && readVersion !== stateReadVersion)) return;
           if (!isRecord(response) || typeof response.ok !== "boolean") {
             throw new Error("Invalid application response");
           }
           if (operation === "deploymentOptions") {
+            catalogAttempted = true;
             if (response.ok && isRecord(response.catalog)
               && Array.isArray(response.catalog.environments) && response.catalog.environments.every(e => isRecord(e) && typeof e.name === "string" && typeof e.region === "string")
               && Array.isArray(response.catalog.images) && response.catalog.images.every(i => isRecord(i) && typeof i.name === "string" && typeof i.region === "string")
@@ -636,14 +655,12 @@ export function createAvailabilityActions() {
           if (response.ok && (operation === "saveConnection" || operation === "removeConnection")) connectionExpanded = false;
           if (!response.ok && isRecord(response.error) && response.error.code === "authentication_failed") connectionExpanded = true;
           const monitoring = isRecord(response.monitoring) ? response.monitoring : null;
-          if (operation === "configuration" && monitoring) {
+          if (!hydrated && monitoring) {
+            hydrated = true;
             const plan = monitoring.plan;
             if (isRecord(plan) && ["itemId", "name", "environment", "image", "keypair"].every(f => typeof plan[f] === "string") && typeof plan.publicIp === "boolean"
               && (plan.userData === undefined || typeof plan.userData === "string") && (plan.sshSource === undefined || typeof plan.sshSource === "string")) {
               restoredPlan = plan as unknown as DeploymentPlan;
-            }
-            if (typeof monitoring.lastCheckedAt === "string" && Number.isFinite(Date.parse(monitoring.lastCheckedAt))) {
-              text("last-check", `Last check before restart: ${monitoring.lastCheckedAt}. Checking fresh stock…`);
             }
           }
           const deployment = monitoring && isRecord(monitoring.state) ? monitoring.state : response.deployment;
@@ -658,39 +675,71 @@ export function createAvailabilityActions() {
               if (acknowledgement && "checked" in acknowledgement) acknowledgement.checked = false;
             }
           }
+          if (typeof response.pollingSeconds === "number" && [0, 60, 300, 600].includes(response.pollingSeconds)) {
+            pollingSeconds = response.pollingSeconds;
+            const node = get("polling");
+            if (node && "value" in node) node.value = String(pollingSeconds);
+          }
+          if (quiet) backendRefreshing = response.refreshing === true;
           if (!response.ok) {
             const presentation = failurePresentation(response.error);
             setError(presentation.message, presentation.details);
             if (operation === "refresh" && snapshot) markStale(true);
-          } else if (operation === "refresh") {
-            const nextSnapshot = readSnapshot(response.snapshot);
-            if (!nextSnapshot) throw new Error("Invalid snapshot response");
-            snapshot = nextSnapshot;
-            markStale(false);
-            updateOptions("region", snapshot.items.map((item) => item.region));
-            updateOptions("gpu", snapshot.items.map((item) => item.gpu));
-            renderResults();
+          } else if (operation === "refresh" || quiet || operation === "setPolling") {
+            if (response.snapshot !== null && response.snapshot !== undefined) {
+              const nextSnapshot = readSnapshot(response.snapshot);
+              if (!nextSnapshot) throw new Error("Invalid snapshot response");
+              const changed = !snapshot || snapshot.checkedAt !== nextSnapshot.checkedAt || JSON.stringify(snapshot.items) !== JSON.stringify(nextSnapshot.items);
+              snapshot = nextSnapshot;
+              if (changed) {
+                updateOptions("region", snapshot.items.map((item) => item.region));
+                updateOptions("gpu", snapshot.items.map((item) => item.gpu));
+                renderResults();
+              }
+            } else if (quiet && snapshot) {
+              snapshot = null;
+              const body = get("results-body");
+              body?.replaceChildren();
+              const wrap = body?.closest("table")?.parentElement;
+              if (wrap) wrap.hidden = true;
+              text("summary", "0 matching options · 0 available · 0 out of stock · 0 unknown");
+              text("empty", "No cached availability yet. The backend will check using the saved connection.");
+              show("empty", true);
+              text("last-check", "Last successful check: Never");
+              renderDeploymentOptions();
+            }
+            const checkError = isRecord(response.error) ? response.error : null;
+            markStale(Boolean(checkError && snapshot));
+            if (checkError) {
+              const presentation = failurePresentation(checkError);
+              setError(presentation.message, presentation.details);
+              backendErrorVisible = true;
+              if (checkError.code === "authentication_failed") connectionExpanded = true;
+            } else if (backendErrorVisible) {
+              setError("");
+              backendErrorVisible = false;
+            }
           } else if (operation === "removeConnection" && snapshot) {
             markStale(true);
           }
         } catch {
-          if (disposed) return;
-          if (launchId || operation === "armDeployment") {
+          if (disposed || (quiet && readVersion !== stateReadVersion)) return;
+          if (!quiet && (launchId || operation === "armDeployment")) {
             launchId = undefined;
             deploymentUncertain = true;
-            text("deploy-status", "The operation could not be confirmed. Automatic creation checks have stopped. Check Hyperstack for the VM, then use Cancel waiting before arming again.");
+            text("deploy-status", "The operation could not be confirmed. The backend may still be monitoring or creating the VM. Reconnect to check its status before arming again.");
           }
-          setError("The operation could not be completed. Check plugin permissions and retry.");
+          setError(quiet ? "Could not read backend status. Monitoring continues on the server; reconnect to view updates." : "The operation could not be completed. Check plugin permissions and retry.");
           if (operation === "refresh" && snapshot) markStale(true);
         } finally {
           content = {};
-          busy = false;
+          if (quiet) readingState = false;
+          else busy = false;
           if (!disposed) {
             updateControls();
             schedule();
-            if (operation === "armDeployment" && launchId) void run("refresh");
-            if ((operation === "configuration" || operation === "saveConnection") && configuration?.ready) {
-              void run("deploymentOptions").then(() => run("refresh"));
+            if (configuration?.ready && !catalogAttempted && operation !== "deploymentOptions") {
+              void run("deploymentOptions");
             }
           }
         }
@@ -728,9 +777,7 @@ export function createAvailabilityActions() {
             void run("cancelDeployment");
             break;
           case "hyperstack-polling": {
-            const seconds = Number(value("polling"));
-            pollingSeconds = [0, 60, 300, 600].includes(seconds) ? seconds : 0;
-            schedule();
+            void run("setPolling");
             break;
           }
           case "hyperstack-region":
@@ -748,13 +795,12 @@ export function createAvailabilityActions() {
       pollingSeconds = [0, 60, 300, 600].includes(initialPolling)
         ? initialPolling
         : 0;
-      void run("configuration");
+      void run("state");
 
       return () => {
         disposed = true;
         stopTimer();
-        // The durable plan survives view cleanup. Only an explicit Cancel
-        // waiting action disarms it; the next view restores its launch ID.
+        // Backend polling and durable waiting are independent of this view.
         launchId = undefined;
         root.removeEventListener("hyperstack-availability-command", onCommand);
         technicalText.textContent = "";

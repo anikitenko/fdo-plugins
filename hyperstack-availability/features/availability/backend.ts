@@ -12,6 +12,8 @@ import type {
 } from "./service";
 
 export const AVAILABILITY_HANDLERS = {
+  state: "hyperstack.availability.state",
+  setPolling: "hyperstack.availability.setPolling",
   deploymentOptions: "hyperstack.availability.deploymentOptions",
   configuration: "hyperstack.availability.configuration",
   saveConnection: "hyperstack.availability.saveConnection",
@@ -53,7 +55,8 @@ export type AvailabilityBackendErrorCode =
   | AvailabilityServiceErrorCode
   | "invalid_input"
   | "storage_locked"
-  | "storage_unavailable";
+  | "storage_unavailable"
+  | "refresh_settings_unavailable";
 
 export interface AvailabilityBackendError {
   readonly code: AvailabilityBackendErrorCode;

@@ -8,7 +8,7 @@ Check Hyperstack VM stock by region, GPU and flavor without repeatedly searching
 2. Open **Manage Plugins → Capabilities** and grant the permissions below.
 3. Open the plugin and enter your Hyperstack API key in **Connection**.
 4. Choose **Save API key**.
-5. Once configuration is ready, choose **Check availability**.
+5. The backend checks stock once when it starts with a saved key, or after saving a new key. Pages read that cached snapshot. Choose **Check availability** only when you want an explicit additional check.
 
 A saved key makes the plugin ready to attempt a check. It does not prove that the key is valid, network access is granted, or Hyperstack is reachable.
 
@@ -48,7 +48,9 @@ Stock states mean:
 
 **Available VMs** shows a count only when reported; otherwise it displays **Not reported**. The last successful check timestamp identifies the snapshot’s age. Availability can change before a VM is created, and this plugin does not reserve capacity.
 
-Automatic refresh supports manual checks or intervals of one, five or ten minutes. Hidden views skip ordinary polling checks; explicitly armed VM creation continues checking while the view remains open. Duplicate operations are prevented while a request is in progress, and lifecycle cleanup stops polling and prevents late responses from updating a disposed view.
+**Backend automatic refresh** supports manual checks or intervals of one, five or ten minutes. The selected interval is flushed to the plugin-scoped JSON store under a separate settings key, and restored after browser reloads, FDO plugin reloads and backend restarts. New installations default to manual checks. All pages share the same backend interval; changing it updates the other pages’ dropdowns. The interval runs from the end of each check, preventing overlap.
+
+The plugin starts one backend scheduler in `init()`, independent of browser sessions. Opening or reloading a page only reads cached stock and monitoring state; it never forces a Hyperstack stock request. The UI reads the backend cache every five seconds while visible, preserves displayed results during background checks, and marks them stale if the latest check fails. Closing a page stops only those UI reads. Explicit **Check availability** and scheduled checks share an in-flight request. Environment/image/key options also share a five-minute backend cache; **Reload VM options** explicitly bypasses it.
 
 ## Create one VM when stock becomes available
 
@@ -57,13 +59,19 @@ Automatic refresh supports manual checks or intervals of one, five or ten minute
 3. Optionally assign a public IP, enable inbound SSH with an explicit IPv4 source CIDR (for example your IP with `/32`), and supply a cloud-init script. SSH is off by default; enabling it adds only an ingress TCP port 22 rule. Otherwise configure network access in Hyperstack.
 4. Acknowledge the resulting Hyperstack charges, then choose **Create one VM when available**. This authorizes one creation request, including immediate creation if a fresh check reports stock.
 
-An armed plan checks immediately, then 60 seconds after each completed check while FDO is open (including when the plugin is hidden), independently of the availability refresh selector. The backend checks fresh availability for the exact selected type, verifies the environment's region, and sends a single creation request with `count: 1`. Availability is not a reservation: quota, balance, image/keypair validity and stock changes can still cause rejection.
+An armed plan checks immediately, then 60 seconds after each completed check while the plugin backend is running, even with no page open, independently of the availability refresh selector. The backend checks fresh availability for the exact selected type, verifies the environment's region, and sends a single creation request with `count: 1`. Availability is not a reservation: quota, balance, image/keypair validity and stock changes can still cause rejection.
 
-The deployment fields stay locked while waiting. The VM configuration (including optional cloud-init), monitoring status and last successful check time are saved in the host’s plugin-scoped JSON store. The API key remains in SDK secret storage. **Cancel waiting** durably disarms the plan; it does not delete a submitted VM. Replacing or removing the API key also durably cancels waiting. Reloading or closing the view stops its current timer without cancelling the saved plan. When FDO loads the plugin again, it restores the fields and waiting status and checks fresh stock automatically. No checks run while FDO is closed or the plugin is disabled.
+The deployment fields stay locked while waiting. The VM configuration (including optional cloud-init), monitoring status and last successful check time are saved in the host’s plugin-scoped JSON store. The API key remains in SDK secret storage. **Cancel waiting** durably disarms the plan; it does not delete a submitted VM. Replacing or removing the API key also durably cancels waiting. Reloading or closing a view does not stop backend polling or cancel the saved plan. When the backend starts again, it restores waiting and checks fresh stock automatically. No checks run while the backend process is stopped; in desktop FDO this includes closing FDO or disabling the plugin.
 
 Successful submission shows the VM ID; follow provisioning and connection details in the Hyperstack console. Failures stop the plan. A timeout, malformed success or lost acknowledgement can mean the VM was created: check the console for the VM name before explicitly arming another plan. The backend flushes a consumed “creating” marker before contacting Hyperstack. If the app stops during creation, the restored status is **outcome unknown**, with no automatic retry. Submitted, failed and cancelled plans remain stopped across restarts. Storage failures block creation; there is no silent fallback to memory storage. Use **Cancel waiting** to discard invalid saved monitoring after restoring storage permissions, and verify any previously interrupted VM creation in Hyperstack before arming again. Creation is never automatically retried. API keys and raw provider errors remain backend-only.
 
 The API implementation follows Hyperstack's [Create virtual machines](https://docs.hyperstack.cloud/docs/api-reference/create-vms/), [Quickstart](https://docs.hyperstack.cloud/docs/api-reference/quickstart/) and [List environments](https://docs.hyperstack.cloud/docs/api-reference/list-environments/) documentation. The saved key needs permission to list environments, images and keypairs and create VMs in addition to checking stock. Catalog GET requests are paginated and bounded by a timeout; failures keep stock checks usable and block arming until options load. Only resource names and region/environment associations cross the UI bridge; public key material is excluded. Hyperstack remains authoritative for flavor/image compatibility, quotas and billing.
+
+## Exported container behavior
+
+The scheduler starts when the exported backend initializes, even before anyone opens the web app. Keep the container running for continuous monitoring. Persist the export’s `/data` directory (or its configured `WEB_APP_DATA_DIR`) so the refresh setting, monitoring plan and credential vault survive container replacement. A page reload reuses the running process’s cache; a backend restart performs one initial fresh stock check.
+
+This implementation runs one scheduler per process and uses the export’s single-writer JSON store. Run one replica and one active revision; overlapping backend processes need a distributed lease/transactional store before they can safely share automatic VM creation. The repository’s Azure export template already specifies one minimum and maximum replica. Re-export the plugin to include these changes in an existing container image.
 
 ## Development verification
 
@@ -104,7 +112,8 @@ The repair replaces the adapter-unavailable blocker while preserving the existin
 
 | File | Responsibility |
 | --- | --- |
-| `/index.ts` | Declare required capabilities, construct the service and backend, bind `this.secrets`, and register backend handlers in `init()`. |
+| `/index.ts` | Declare required capabilities, start the backend runtime, bind `this.secrets`, and register handlers in `init()`. |
+| `/features/availability/runtime.ts` | Own the scheduler, cached view state, coalesced refreshes and saved refresh interval. |
 | `/features/availability/service.ts` | Perform backend retrieval using the verified provider contract, enforce deadlines, validate normalized responses and return redacted failures. |
 | `/features/availability/backend.ts` | Implement configuration, key saving, removal and refresh operations with nonsecret application results. |
 | `/features/availability/actions.ts` | Wire self-contained declarative actions, validate bridge results, prevent duplicate requests, update results and dispose polling resources. |

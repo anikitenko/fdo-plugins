@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {createAvailabilityActions} from "./actions";
-import {AVAILABILITY_HANDLERS, createAvailabilityBackend} from "./backend";
+import {AVAILABILITY_HANDLERS} from "./backend";
 import type {
   AvailabilityConfiguration,
   AvailabilityConfigurationResult,
@@ -309,7 +309,7 @@ function success(data: AvailabilitySnapshot): AvailabilityRefreshResult {
   return {ok: true, configuration: ready, snapshot: data};
 }
 
-type Reply = AvailabilityConfigurationResult | AvailabilityRefreshResult | import("./catalog").CatalogResult;
+type Reply = AvailabilityConfigurationResult | AvailabilityRefreshResult | import("./catalog").CatalogResult | import("./runtime").BackendViewState;
 type Responder = (call: BridgeCall) => Promise<Reply>;
 
 function harness(respond: Responder, optionsReply?: import("./catalog").CatalogResult) {
@@ -412,401 +412,230 @@ function harness(respond: Responder, optionsReply?: import("./catalog").CatalogR
   };
 }
 
-test("connection and refresh clicks use backend operations and prevent duplicate requests", async (t) => {
-  const key = "test-only-secret-do-not-render";
-  const save = deferred<Reply>();
-  const refresh = deferred<Reply>();
-  let configured = false;
+const cached = (data: AvailabilitySnapshot | null = snapshot("Cached VM", 2), seconds = 300): import("./runtime").BackendViewState => ({ok: true, configuration: ready, snapshot: data, error: null, refreshing: false, pollingSeconds: seconds});
 
-  const view = harness(async (call) => {
-    assert.equal(call.type, "UI_MESSAGE");
-    switch (call.handler) {
-      case AVAILABILITY_HANDLERS.configuration:
-        assert.deepEqual(call.content, {});
-        return {ok: true, configuration: configured ? ready : missing};
-      case AVAILABILITY_HANDLERS.saveConnection:
-        assert.deepEqual(call.content, {apiKey: key});
-        return save.promise;
-      case AVAILABILITY_HANDLERS.refresh:
-        assert.deepEqual(call.content, {});
-        return refresh.promise;
-      case AVAILABILITY_HANDLERS.removeConnection:
-        assert.deepEqual(call.content, {});
-        configured = false;
-        return {ok: true, configuration: missing};
-      default:
-        throw new Error("Unexpected backend operation");
-    }
+test("page loads use cached backend state, restore automatic refresh, and never force a stock request", async t => {
+  const view = harness(async call => {
+    assert.equal(call.handler, AVAILABILITY_HANDLERS.state);
+    assert.deepEqual(call.content, {});
+    return cached();
   });
   t.after(() => view.dispose());
-
   await settle();
-  assert.deepEqual(view.calls.map((call) => call.handler), [
-    AVAILABILITY_HANDLERS.configuration,
-  ]);
-  assert.equal(view.document.get("refresh").hasAttribute("disabled"), true);
-  assert.equal(view.document.get("save-connection").hasAttribute("disabled"), false);
-
-  // Empty input must fail locally without invoking credential storage.
-  view.document.get("api-key").value = "   ";
-  view.click("save-connection");
-  await settle();
-  assert.equal(view.calls.length, 1);
-  assert.equal(view.document.get("error").hidden, false);
-  assert.match(view.document.get("error").textContent, /API key/i);
-
-  view.document.get("api-key").value = key;
-  view.click("save-connection");
-  view.click("save-connection");
-  // Exercise the busy guard independently of disabled-button behavior.
-  view.document.get("save-connection").dispatchEvent(new Event("click"));
-  await settle();
-
-  assert.equal(
-    view.calls.filter((call) => call.handler === AVAILABILITY_HANDLERS.saveConnection).length,
-    1,
-  );
-  assert.equal(view.document.get("api-key").value, "");
-  assert.equal(view.document.get("save-connection").hasAttribute("disabled"), true);
-  assert.equal(view.document.get("connection").getAttribute("aria-busy"), "true");
-
-  configured = true;
-  save.resolve({ok: true, configuration: ready});
-  await settle();
-  assert.equal(view.document.get("api-key").value, "");
-  assert.equal(view.document.get("refresh").hasAttribute("disabled"), true); // Automatic first stock check is in flight.
-  assert.match(view.document.get("connection-status").textContent, /saved/i);
-  assert.equal(view.document.get("connection-help").textContent, ready.message);
+  assert.match(view.document.get("results-body").textContent, /Cached VM/);
+  assert.equal(view.document.get("polling").value, "300");
   assert.equal(view.document.get("connection").hidden, true);
   assert.equal(view.document.get("manage-connection").hidden, false);
-  assert.equal(view.document.get("error").hidden, true);
-
-  view.click("refresh");
-  view.document.get("refresh").dispatchEvent(new Event("click"));
-  await settle();
-  assert.equal(
-    view.calls.filter((call) => call.handler === AVAILABILITY_HANDLERS.refresh).length,
-    1,
-  );
-  assert.equal(view.document.get("loading").hidden, false);
-  assert.equal(view.document.get("refresh").hasAttribute("disabled"), true);
-  assert.equal(view.document.get("results").getAttribute("aria-busy"), "true");
-
-  const flavor = "GPU <large> & fast";
-  refresh.resolve(success(snapshot(flavor, 3)));
-  await settle();
-
-  const rows = view.document.get("results-body").querySelectorAll("tr");
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].children[0].textContent, flavor);
-  assert.equal(rows[0].children[0].children.length, 0);
-  assert.equal(rows[0].getAttribute("data-availability-status"), "available");
-  assert.equal(rows[0].children[3].textContent, "Available");
-  assert.equal(rows[0].children[4].textContent, "3");
-  assert.equal(
-    view.document.get("summary").textContent,
-    "1 matching options · 1 available · 0 out of stock · 0 unknown",
-  );
   assert.equal(view.document.get("loading").hidden, true);
-  assert.equal(view.document.get("refresh").hasAttribute("disabled"), false);
-  assert.equal(view.document.get("results").getAttribute("aria-busy"), "false");
-
   view.click("manage-connection");
   assert.equal(view.document.get("connection").hidden, false);
   assert.equal(view.document.get("manage-connection").getAttribute("aria-expanded"), "true");
   view.click("manage-connection");
   assert.equal(view.document.get("connection").hidden, true);
-  view.click("manage-connection");
-  view.click("clear-connection");
-  await settle();
-  assert.equal(view.document.get("connection").hidden, false);
-  assert.equal(view.document.get("manage-connection").hidden, true);
-  assert.equal(view.calls.at(-1)?.handler, AVAILABILITY_HANDLERS.removeConnection);
-  assert.equal(view.document.get("refresh").hasAttribute("disabled"), true);
-  assert.equal(view.document.get("clear-connection").hasAttribute("disabled"), true);
-  assert.equal(view.document.get("save-connection").hasAttribute("disabled"), false);
-  assert.equal(view.document.get("stale").hidden, false);
-  assert.equal(view.document.get("results-body").textContent.includes(flavor), true);
-
-  for (const call of view.calls) {
-    if (call.handler !== AVAILABILITY_HANDLERS.saveConnection) {
-      assert.equal(JSON.stringify(call).includes(key), false);
-    }
-  }
-  for (const node of view.document.nodes.values()) {
-    assert.equal(node.textContent.includes(key), false);
-    for (const value of node.attributes.values()) {
-      assert.equal(value.includes(key), false);
-    }
-  }
-});
-
-test("refresh failures recover safely and lifecycle cleanup stops updates", async (t) => {
-  const leakedDetail = "private-token-and-provider-body";
-  const late = deferred<Reply>();
-  let checks = 0;
-
-  const view = harness(async (call) => {
-    assert.equal(call.type, "UI_MESSAGE");
-    assert.deepEqual(call.content, {});
-    if (call.handler === AVAILABILITY_HANDLERS.configuration) {
-      return {ok: true, configuration: ready};
-    }
-    assert.equal(call.handler, AVAILABILITY_HANDLERS.refresh);
-    checks += 1;
-    if (checks === 1) return success(snapshot("Original VM", 2));
-    if (checks === 2) {
-      return {
-        ok: false,
-        configuration: ready,
-        error: {
-          code: "network_error",
-          message: leakedDetail,
-          retryable: true,
-        },
-      };
-    }
-    if (checks === 3) return success(snapshot("Recovered VM", 0));
-    return late.promise;
-  });
-  t.after(() => view.dispose());
-  await settle();
-
-  // The initial stock check runs automatically after options preload.
-  assert.match(view.document.get("results-body").textContent, /Original VM/);
-  assert.equal(view.document.get("stale").hidden, true);
-
-  view.click("refresh");
-  await settle();
-  assert.match(view.document.get("results-body").textContent, /Original VM/);
-  assert.equal(view.document.get("stale").hidden, false);
-  assert.equal(view.document.get("results").getAttribute("data-stale"), "true");
-  assert.equal(view.document.get("error").hidden, false);
-  assert.match(view.document.get("error").textContent, /reached|access|retry/i);
-  assert.equal(view.document.get("error").textContent.includes(leakedDetail), false);
-  assert.equal(view.document.get("refresh").hasAttribute("disabled"), false);
-  assert.equal(view.document.get("loading").hidden, true);
-
-  view.click("refresh");
-  await settle();
-  assert.match(view.document.get("results-body").textContent, /Recovered VM/);
-  assert.doesNotMatch(view.document.get("results-body").textContent, /Original VM/);
-  assert.equal(
-    view.document.get("results-body").querySelector("tr")
-      ?.getAttribute("data-availability-status"),
-    "unavailable",
-  );
-  assert.equal(view.document.get("stale").hidden, true);
-  assert.equal(view.document.get("results").getAttribute("data-stale"), "false");
-  assert.equal(view.document.get("error").hidden, true);
-
-  view.change("polling", "60");
-  assert.equal(view.timers.size, 1);
-  assert.equal([...view.timers.values()][0].delay, 60_000);
-
-  view.change("polling", "300");
-  assert.equal(view.timers.size, 1);
-  assert.equal([...view.timers.values()][0].delay, 300_000);
-
-  view.document.hidden = true;
+  const row = view.document.get("results-body").children[0];
   view.fireTimer();
   await settle();
-  assert.equal(checks, 3);
-  assert.equal(view.timers.size, 1);
-
-  view.document.hidden = false;
-  view.fireTimer();
-  await settle();
-  assert.equal(checks, 4);
-  assert.equal(view.document.get("loading").hidden, false);
-  assert.equal(view.timers.size, 0);
-
-  const retainedBody = view.document.get("results-body").textContent;
-  view.document.get("api-key").value = "unsaved-key";
-  view.dispose();
-  assert.equal(view.timers.size, 0);
-  assert.equal(view.document.get("api-key").value, "");
-
-  late.resolve(success(snapshot("Late VM must not appear", 9)));
-  await settle();
-  assert.equal(view.document.get("results-body").textContent, retainedBody);
-  assert.doesNotMatch(view.document.get("results-body").textContent, /Late VM/);
-  assert.equal(view.timers.size, 0);
-
-  const callCount = view.calls.length;
-  view.click("refresh");
-  view.change("polling", "60");
-  await settle();
-  assert.equal(view.calls.length, callCount);
-  assert.equal(view.timers.size, 0);
+  assert.equal(view.document.get("results-body").children[0], row, "Unchanged cached data must not rebuild rows");
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.refresh).length, 0);
 });
 
-test("disposing an idle lifecycle cancels its scheduled polling callback", async (t) => {
-  const view = harness(async (call) => {
-    assert.equal(call.handler, AVAILABILITY_HANDLERS.configuration);
-    return {ok: true, configuration: ready};
-  });
-  t.after(() => view.dispose());
-  await settle();
-
-  view.change("polling", "60");
-  assert.equal(view.timers.size, 1);
-  const queuedCallback = [...view.timers.values()][0].callback;
-  const callCount = view.calls.length;
-
-  view.dispose();
-  assert.equal(view.timers.size, 0);
-
-  // Even a callback already queued by the browser must honor disposal.
-  queuedCallback();
-  await settle();
-  assert.equal(view.calls.length, callCount);
-  assert.equal(view.timers.size, 0);
-});
-
-test("deployment clicks arm one VM, poll fresh stock and stop after creation", async (t) => {
-  let current = snapshot("GPU VM", 0);
-  let creations = 0;
-  const backend = createAvailabilityBackend({
-    secrets: {get: async () => "backend-only-key", set: async () => {}, delete: async () => true},
-    service: {check: async () => ({ok: true, snapshot: current})},
-    deploymentService: {create: async (_key, plan, item) => {
-      creations++;
-      assert.equal(plan.name, "new-vm");
-      assert.equal(item.flavor, "GPU VM");
-      return {status: "submitted", message: "VM #42 was scheduled for creation.", vmId: 42};
-    }},
-  });
+test("save/remove connection and explicit refresh remain available with duplicate-click protection", async t => {
+  const save = deferred<Reply>();
+  const refresh = deferred<Reply>();
+  const key = "test-only-secret";
   const view = harness(async call => {
     switch (call.handler) {
-      case AVAILABILITY_HANDLERS.configuration: return backend.getConfiguration();
-      case AVAILABILITY_HANDLERS.refresh: return backend.refresh(call.content);
-      case AVAILABILITY_HANDLERS.armDeployment: return backend.armDeployment(call.content);
-      case AVAILABILITY_HANDLERS.cancelDeployment: return backend.cancelDeployment();
+      case AVAILABILITY_HANDLERS.state: return { ...cached(null), configuration: missing };
+      case AVAILABILITY_HANDLERS.saveConnection: assert.deepEqual(call.content, {apiKey: key}); return save.promise;
+      case AVAILABILITY_HANDLERS.refresh: assert.deepEqual(call.content, {}); return refresh.promise;
+      case AVAILABILITY_HANDLERS.removeConnection: return {ok: true, configuration: missing};
       default: throw new Error("Unexpected operation");
     }
   });
   t.after(() => view.dispose());
   await settle();
+  assert.equal(view.document.get("connection").hidden, false);
+  view.document.get("api-key").value = " ";
+  view.click("save-connection");
+  await settle();
+  assert.equal(view.calls.length, 1);
+  view.document.get("api-key").value = key;
+  view.click("save-connection");
+  view.document.get("save-connection").dispatchEvent(new Event("click"));
+  await settle();
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.saveConnection).length, 1);
+  assert.equal(view.document.get("api-key").value, "");
+  save.resolve({ok: true, configuration: ready});
+  await settle();
+  assert.equal(view.document.get("connection").hidden, true);
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.refresh).length, 0);
   view.click("refresh");
+  view.document.get("refresh").dispatchEvent(new Event("click"));
   await settle();
-  view.click("deploy-arm");
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.refresh).length, 1);
+  refresh.resolve(success(snapshot("VM <large> & fast", 3)));
   await settle();
-  assert.equal(view.calls.filter(call => call.handler === AVAILABILITY_HANDLERS.armDeployment).length, 0);
-  assert.match(view.document.get("deploy-status").textContent, /complete all deployment fields/);
-  view.document.get("deploy-type").value = current.items[0].id;
-  for (const [name, value] of Object.entries({name: "new-vm", environment: "env", image: "Ubuntu", keypair: "key"})) view.document.get(`deploy-${name}`).value = value;
-  view.document.get("deploy-charges").checked = true;
-  view.click("deploy-arm");
-  view.document.get("deploy-arm").dispatchEvent(new Event("click"));
+  const cells = view.document.get("results-body").querySelector("tr")!.children;
+  assert.equal(cells[0].textContent, "VM <large> & fast");
+  assert.equal(cells[0].children.length, 0);
+  assert.equal(cells[3].textContent, "Available");
+  view.click("manage-connection");
+  view.click("clear-connection");
   await settle();
-  await settle();
-  assert.equal(view.calls.filter(call => call.handler === AVAILABILITY_HANDLERS.armDeployment).length, 1);
-  assert.equal(creations, 0);
-  assert.equal(view.document.get("deploy-name").hasAttribute("disabled"), true);
-  assert.equal(view.timers.size, 1);
-  assert.equal([...view.timers.values()][0].delay, 60_000);
-  assert.match(view.document.get("deploy-status").textContent, /Armed for one/);
-  current = snapshot("GPU VM", 1);
-  view.document.hidden = true; // Explicitly armed automation also checks in a hidden view.
-  view.fireTimer();
-  await settle();
-  await settle();
-  assert.equal(creations, 1);
-  assert.match(view.document.get("deploy-status").textContent, /#42/);
-  assert.equal(view.timers.size, 0);
-  assert.equal(view.document.get("deploy-charges").checked, false);
-  view.click("refresh");
-  await settle();
-  assert.equal(creations, 1);
-  assert.doesNotMatch(JSON.stringify(view.calls), /backend-only-key/);
+  assert.equal(view.document.get("connection").hidden, false);
+  assert.equal(view.document.get("manage-connection").hidden, true);
+  assert.equal(view.document.get("refresh").hasAttribute("disabled"), true);
+  for (const node of view.document.nodes.values()) assert.equal(node.textContent.includes(key), false);
 });
 
-test("disposing an armed view stops its timer without cancelling durable waiting", async (t) => {
+test("automatic refresh changes are saved by the backend and other clients' settings update the dropdown", async t => {
+  let seconds = 300;
   const view = harness(async call => {
-    if (call.handler === AVAILABILITY_HANDLERS.configuration) return {ok: true, configuration: ready};
-    if (call.handler === AVAILABILITY_HANDLERS.armDeployment) return {ok: true, configuration: ready, deployment: {status: "waiting", launchId: "one", message: "Waiting"}};
-    if (call.handler === AVAILABILITY_HANDLERS.cancelDeployment) return {ok: true, configuration: ready};
-    return success(snapshot("VM", 0));
+    if (call.handler === AVAILABILITY_HANDLERS.setPolling) seconds = Number(record(call.content).seconds);
+    else assert.equal(call.handler, AVAILABILITY_HANDLERS.state);
+    return cached(snapshot("VM", 0), seconds);
   });
   t.after(() => view.dispose());
   await settle();
-  view.click("refresh");
+  view.change("polling", "600");
   await settle();
-  view.document.get("deploy-type").value = "region-a:gpu-a:flavor-a";
-  for (const name of ["name", "environment", "image", "keypair"]) view.document.get(`deploy-${name}`).value = "configured";
-  view.document.get("deploy-charges").checked = true;
-  view.click("deploy-arm");
+  assert.equal(seconds, 600);
+  assert.equal(view.document.get("polling").value, "600");
+  seconds = 0;
+  view.fireTimer();
   await settle();
-  assert.equal(view.timers.size, 1);
-  const queued = [...view.timers.values()][0].callback;
-  view.dispose();
-  await settle();
-  assert.equal(view.calls.filter(call => call.handler === AVAILABILITY_HANDLERS.cancelDeployment).length, 0);
-  assert.equal(view.timers.size, 0);
-  const calls = view.calls.length;
-  queued();
-  await settle();
-  assert.equal(view.calls.length, calls);
+  assert.equal(view.document.get("polling").value, "0");
+  assert.equal([...view.timers.values()][0].delay, 5000, "UI reads cache independently of the provider interval");
 });
 
+test("background refresh preserves results and fields; stale errors are redacted and recover", async t => {
+  let state = cached();
+  const view = harness(async () => state);
+  t.after(() => view.dispose());
+  await settle();
+  const row = view.document.get("results-body").children[0];
+  view.document.get("deploy-name").value = "unfinished-name";
+  state = {...state, refreshing: true};
+  view.fireTimer();
+  await settle();
+  assert.equal(view.document.get("results-body").children[0], row);
+  assert.equal(view.document.get("deploy-name").value, "unfinished-name");
+  assert.equal(view.document.get("deploy-name").hasAttribute("disabled"), false);
+  state = {...state, refreshing: false, error: {code: "network_error", message: "private-token", retryable: true}};
+  view.fireTimer();
+  await settle();
+  assert.equal(view.document.get("stale").hidden, false);
+  assert.doesNotMatch(view.document.get("error").textContent, /private-token/);
+  state = {...cached(snapshot("Recovered", 0)), error: null};
+  view.fireTimer();
+  await settle();
+  assert.equal(view.document.get("stale").hidden, true);
+  assert.equal(view.document.get("error").hidden, true);
+  assert.match(view.document.get("results-body").textContent, /Recovered/);
+});
 
-test("preloaded selections follow region and environment changes and clear removed resources", async t => {
+test("restored monitoring displays saved fields and server submission without sending launch IDs or refreshes", async t => {
+  const monitoring = {version: 1 as const, plan: {itemId: "region-a:gpu-a:flavor-a", name: "saved-vm", environment: "env", image: "Ubuntu", keypair: "key", publicIp: true, sshSource: "203.0.113.4/32", userData: "#cloud-config"}, state: {status: "waiting" as const, launchId: "saved-launch", message: "Monitoring restored"}};
+  let state: import("./runtime").BackendViewState = {...cached(snapshot("VM", 0)), monitoring};
+  const view = harness(async call => {assert.equal(call.handler, AVAILABILITY_HANDLERS.state); assert.deepEqual(call.content, {}); return state;});
+  t.after(() => view.dispose());
+  await settle();
+  assert.equal(view.document.get("deploy-name").value, "saved-vm");
+  assert.equal(view.document.get("deploy-type").value, monitoring.plan.itemId);
+  assert.equal(view.document.get("deploy-keypair").value, "key");
+  assert.equal(view.document.get("deploy-public-ip").checked, true);
+  assert.equal(view.document.get("deploy-user-data").value, "#cloud-config");
+  assert.equal(view.document.get("deploy-name").hasAttribute("disabled"), true);
+  state = {...state, monitoring: {...monitoring, state: {status: "submitted", vmId: 42, message: "VM #42 scheduled"}}};
+  view.fireTimer();
+  await settle();
+  assert.match(view.document.get("deploy-status").textContent, /#42/);
+  assert.equal(view.document.get("deploy-charges").checked, false);
+  const queued = [...view.timers.values()][0].callback;
+  view.dispose();
+  const count = view.calls.length;
+  queued();
+  await settle();
+  assert.equal(view.calls.length, count);
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.cancelDeployment).length, 0);
+});
+
+test("regional selectors still clear incompatible images and keys; catalog failures block arming", async t => {
   const stock = snapshot("VM", 0);
   const other = {...stock.items[0], id: "other", region: "Region B"};
-  const view = harness(async call => call.handler === AVAILABILITY_HANDLERS.configuration
-    ? {ok: true, configuration: ready}
-    : success({...stock, items: [...stock.items, other]}), {ok: true, catalog: {
-      environments: [{name: "env-a", region: "Region A"}, {name: "env-b", region: "Region B"}],
-      images: [{name: "Ubuntu A", region: "Region A"}, {name: "Ubuntu B", region: "Region B"}],
-      keypairs: [{name: "key-a", environment: "env-a"}, {name: "key-b", environment: "env-b"}],
-    }});
+  const view = harness(async () => cached({...stock, items: [...stock.items, other]}), {ok: true, catalog: {
+    environments: [{name: "env-a", region: "Region A"}, {name: "env-b", region: "Region B"}],
+    images: [{name: "Ubuntu A", region: "Region A"}, {name: "Ubuntu B", region: "Region B"}],
+    keypairs: [{name: "key-a", environment: "env-a"}, {name: "key-b", environment: "env-b"}],
+  }});
   t.after(() => view.dispose());
   await settle();
   view.change("deploy-type", stock.items[0].id);
-  assert.equal(view.document.get("deploy-environment").value, "env-a");
-  assert.equal(view.document.get("deploy-image").value, "Ubuntu A");
   assert.equal(view.document.get("deploy-keypair").value, "key-a");
   view.change("deploy-type", "other");
   assert.equal(view.document.get("deploy-environment").value, "env-b");
   assert.equal(view.document.get("deploy-keypair").value, "key-b");
   assert.doesNotMatch(view.document.get("deploy-image").textContent, /Ubuntu A/);
-});
-
-test("catalog failure leaves stock usable and disables deployment", async t => {
-  const view = harness(async call => call.handler === AVAILABILITY_HANDLERS.configuration
-    ? {ok: true, configuration: ready} : success(snapshot("VM", 1)), {ok: false, message: "private-provider-error"});
-  t.after(() => view.dispose());
+  const failed = harness(async () => cached(), {ok: false, message: "private-provider-error"});
+  t.after(() => failed.dispose());
   await settle();
-  assert.match(view.document.get("results-body").textContent, /VM/);
-  assert.equal(view.document.get("deploy-arm").hasAttribute("disabled"), true);
-  assert.match(view.document.get("deploy-options-status").textContent, /Could not load/);
-  assert.doesNotMatch(view.document.get("deploy-options-status").textContent, /private-provider/);
+  assert.match(failed.document.get("results-body").textContent, /Cached VM/);
+  assert.equal(failed.document.get("deploy-arm").hasAttribute("disabled"), true);
+  assert.doesNotMatch(failed.document.get("deploy-options-status").textContent, /private-provider/);
 });
 
 
-test("a new view restores saved VM fields and resumes polling with the durable launch ID", async t => {
-  const calls: unknown[] = [];
-  const monitoring = {version: 1 as const, plan: {itemId: "region-a:gpu-a:flavor-a", name: "saved-vm", environment: "env", image: "Ubuntu", keypair: "key", publicIp: true, sshSource: "203.0.113.4/32", userData: "#cloud-config"}, state: {status: "waiting" as const, launchId: "saved-launch", message: "Monitoring restored"}, lastCheckedAt: "2026-11-02T10:00:00Z"};
+test("arming sends a plan once and subsequent UI ticks only read cached server state", async t => {
+  let deployment: import("./deployment").DeploymentState = {status: "idle", message: "No plan"};
   const view = harness(async call => {
-    if (call.handler === AVAILABILITY_HANDLERS.configuration) return {ok: true, configuration: ready, monitoring};
-    assert.equal(call.handler, AVAILABILITY_HANDLERS.refresh);
-    calls.push(call.content);
-    return {...success(snapshot("VM", 0)), deployment: monitoring.state, monitoring};
+    if (call.handler === AVAILABILITY_HANDLERS.state) return {...cached(), deployment};
+    if (call.handler === AVAILABILITY_HANDLERS.armDeployment) {
+      assert.deepEqual(call.content, {itemId: "region-a:gpu-a:flavor-a", name: "new-vm", environment: "env", image: "Ubuntu", keypair: "key", publicIp: false, confirmCharges: true});
+      deployment = {status: "waiting", launchId: "backend-id", message: "Waiting on backend"};
+    } else if (call.handler === AVAILABILITY_HANDLERS.cancelDeployment) deployment = {status: "cancelled", message: "Cancelled"};
+    else throw new Error("Unexpected frontend request");
+    return {ok: true, configuration: ready, deployment};
   });
   t.after(() => view.dispose());
   await settle();
-  assert.deepEqual(calls[0], {launchId: "saved-launch"});
-  assert.equal(view.document.get("deploy-name").value, "saved-vm");
-  assert.equal(view.document.get("deploy-type").value, monitoring.plan.itemId);
-  assert.equal(view.document.get("deploy-image").value, "Ubuntu");
-  assert.equal(view.document.get("deploy-keypair").value, "key");
-  assert.equal(view.document.get("deploy-public-ip").checked, true);
-  assert.equal(view.document.get("deploy-ssh-source").value, monitoring.plan.sshSource);
-  assert.equal(view.document.get("deploy-user-data").value, "#cloud-config");
+  view.click("deploy-arm");
+  await settle();
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.armDeployment).length, 0);
+  view.change("deploy-type", "region-a:gpu-a:flavor-a");
+  view.document.get("deploy-name").value = "new-vm";
+  view.document.get("deploy-charges").checked = true;
+  view.click("deploy-arm");
+  view.document.get("deploy-arm").dispatchEvent(new Event("click"));
+  await settle();
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.armDeployment).length, 1);
   assert.equal(view.document.get("deploy-name").hasAttribute("disabled"), true);
-  assert.equal(view.timers.size, 1);
   view.fireTimer();
   await settle();
-  assert.equal(calls.length, 2);
+  assert.equal(view.calls.at(-1)?.handler, AVAILABILITY_HANDLERS.state);
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.refresh).length, 0);
+  view.click("deploy-cancel");
+  await settle();
+  assert.match(view.document.get("deploy-status").textContent, /Cancelled/);
+  assert.equal(view.document.get("deploy-name").hasAttribute("disabled"), false);
+});
+
+
+test("a slow cache read does not swallow commands or overwrite a newer refresh preference", async t => {
+  const late = deferred<Reply>();
+  let reads = 0;
+  const view = harness(async call => {
+    if (call.handler === AVAILABILITY_HANDLERS.state) return ++reads === 1 ? cached() : late.promise;
+    assert.equal(call.handler, AVAILABILITY_HANDLERS.setPolling);
+    return cached(snapshot("VM", 0), 600);
+  });
+  t.after(() => view.dispose());
+  await settle();
+  view.fireTimer();
+  await settle();
+  view.change("polling", "600");
+  await settle();
+  assert.equal(view.calls.at(-1)?.handler, AVAILABILITY_HANDLERS.setPolling);
+  late.resolve(cached());
+  await settle();
+  assert.equal(view.document.get("polling").value, "600");
 });

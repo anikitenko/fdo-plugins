@@ -23,3 +23,23 @@ export function createMonitoringPersistence(getStore: () => ReturnType<typeof Pl
     },
   };
 }
+
+
+/** Separate key: VM state transitions must never overwrite the refresh preference. */
+export function createRefreshPreferences(getStore: () => ReturnType<typeof PluginRegistry.useStore>) {
+  const key = "hyperstack.automatic-refresh.v1";
+  const storage = () => {
+    const store = getStore();
+    if (store.capabilities?.persistent !== true || typeof store.flush !== "function") throw new Error("Persistent storage unavailable");
+    return store;
+  };
+  return {
+    async load(): Promise<unknown> { return storage().get(key); },
+    async save(seconds: number): Promise<void> {
+      if (![0, 60, 300, 600].includes(seconds)) throw new Error("Invalid refresh interval");
+      const store = storage();
+      store.set(key, seconds);
+      await store.flush!();
+    },
+  };
+}

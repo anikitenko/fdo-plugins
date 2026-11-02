@@ -184,7 +184,7 @@ export function createDeploymentController(service: DeploymentService) {
       // Stored messages are never trusted or replayed. A crash after the durable
       // creating marker may have happened after Hyperstack accepted the POST.
       state = status === "waiting"
-        ? {status: "waiting", launchId: saved.launchId as string, message: `Monitoring restored for ${restored!.name} in environment ${restored!.environment}. Waiting for fresh stock; checks run while FDO is open.`}
+        ? {status: "waiting", launchId: saved.launchId as string, message: `Monitoring restored for ${restored!.name} in environment ${restored!.environment}. Waiting for fresh stock; checks run while the plugin backend is running.`}
         : status === "creating" || status === "uncertain"
           ? {status: "uncertain", message: "Previous creation outcome is unknown. Check Hyperstack for the VM before arming again. No automatic retry will be made."}
           : status === "submitted"
@@ -200,7 +200,7 @@ export function createDeploymentController(service: DeploymentService) {
       plan = next;
       draft = next;
       const item = snapshot!.items.find(item => item.id === next.itemId)!;
-      state = {status: "waiting", launchId: `${Date.now()}-${++sequence}`, message: `Armed for one ${item.flavor} in ${item.region}, named ${next.name}, using environment ${next.environment}. Waiting for fresh stock; checks run while FDO is open. Monitoring resumes after restart. Cancel to stop waiting.`};
+      state = {status: "waiting", launchId: `${Date.now()}-${++sequence}`, message: `Armed for one ${item.flavor} in ${item.region}, named ${next.name}, using environment ${next.environment}. Waiting for fresh stock; checks run while the plugin backend is running. Monitoring resumes after restart. Cancel to stop waiting.`};
       return this.state();
     },
     cancel(): DeploymentState {
