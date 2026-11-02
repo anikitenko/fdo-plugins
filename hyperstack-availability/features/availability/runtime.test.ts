@@ -6,7 +6,7 @@ import {createRefreshPreferences} from "./monitoring";
 import type {MonitoringRecord} from "./deployment";
 import type {AvailabilityServiceResult} from "./service";
 
-const clone = <T>(v: T): T => v === undefined ? v : JSON.parse(JSON.stringify(v));
+const clone = <T,>(v: T): T => v === undefined ? v : JSON.parse(JSON.stringify(v));
 async function settle() { for (let i = 0; i < 100; i++) await Promise.resolve(); }
 function clock() {
   const timers = new Map<number, {callback: () => void; ms: number}>();

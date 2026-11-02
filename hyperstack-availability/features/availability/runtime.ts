@@ -52,11 +52,11 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
   let catalog: {result: CatalogResult; expires: number} | undefined;
   let catalogPromise: Promise<CatalogResult> | undefined;
   let queue: Promise<void> = Promise.resolve();
-  const exclusive = <T>(operation: () => Promise<T>): Promise<T> => {
+  function exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const result = queue.then(operation);
     queue = result.then(() => undefined, () => undefined);
     return result;
-  };
+  }
   const stopTimer = () => { if (timer !== undefined) clock.clearTimeout(timer); timer = undefined; };
   const remember = (result: AvailabilityConfigurationResult & {deployment?: DeploymentState}) => {
     configuration = result.configuration;

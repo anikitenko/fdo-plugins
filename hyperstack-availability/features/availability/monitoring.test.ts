@@ -8,7 +8,7 @@ import type {AvailabilitySnapshot} from "./logic";
 
 const input = {itemId: "type", name: "gpu-vm", environment: "env", image: "Ubuntu", keypair: "key", publicIp: true, confirmCharges: true};
 const snapshot = (available = false): AvailabilitySnapshot => ({checkedAt: "2026-11-02T10:00:00Z", items: [{id: "type", region: "A", flavor: "gpu-flavor", gpu: "GPU", availableCount: available ? 1 : 0, isAvailable: available, status: available ? "available" : "unavailable"}]});
-const clone = <T>(v: T): T => v === undefined ? v : JSON.parse(JSON.stringify(v));
+const clone = <T,>(v: T): T => v === undefined ? v : JSON.parse(JSON.stringify(v));
 function disk() {
   let value: unknown;
   const persistence: MonitoringPersistence = {load: async () => clone(value), save: async next => {value = clone(next);}};
