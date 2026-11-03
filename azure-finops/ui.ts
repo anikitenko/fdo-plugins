@@ -164,6 +164,7 @@ export function mountFinOps(root: HTMLElement) {
     { query: string; category: string; index: number; candidatePage: number }
   > = {};
   let refreshMinutes = 0;
+  let lastScopeRefresh = 0;
   let refreshTimer: number | undefined;
   let refreshTimerVersion = 0;
   let refreshSettingVersion = 0;
@@ -202,6 +203,7 @@ export function mountFinOps(root: HTMLElement) {
       processScope: settings.processScope,
       page: nextPage,
       refreshMinutes,
+      refreshDueAt: refreshMinutes && lastScopeRefresh ? lastScopeRefresh + refreshMinutes * 60000 : 0,
       scope,
       filters,
       columns,
@@ -614,6 +616,7 @@ export function mountFinOps(root: HTMLElement) {
       )
         serviceData = undefined;
       snapshot = result;
+      lastScopeRefresh = Date.now();
       if (groupIssue) snapshot!.warnings.unshift(groupIssue);
       scope = result.scope;
       const profile =
@@ -669,7 +672,6 @@ export function mountFinOps(root: HTMLElement) {
           next.setSelectionRange(focus.start, focus.end ?? focus.start);
         restoreScroll(view);
       }
-      rememberView();
     } catch (error) {
       if (ticket === generation && active) {
         connection();
@@ -687,7 +689,12 @@ export function mountFinOps(root: HTMLElement) {
           );
       }
     } finally {
-      if (ticket === generation) scheduleAutoRefresh();
+      if (ticket === generation) {
+        // A failed attempt still waits the full interval before retrying.
+        lastScopeRefresh = Date.now();
+        rememberView();
+        scheduleAutoRefresh();
+      }
     }
   }
   function disposeCharts() {
@@ -3540,8 +3547,9 @@ export function mountFinOps(root: HTMLElement) {
     if (!active) return;
     const status = $("af-refresh-timing");
     if (!refreshMinutes) {status.textContent = "Manual refresh"; return;}
-    if (refreshing || !snapshot) {status.textContent = refreshing ? "Refreshing…" : "Waiting for scope data"; return;}
-    const due = new Date(Date.now() + refreshMinutes * 60000);
+    if (refreshing || !scope || !accounts.some(a => a.tenantId === scope.tenantId && a.id === scope.subscriptionId)) {status.textContent = refreshing ? "Refreshing…" : "Waiting for scope data"; return;}
+    const delay = Math.max(0, (lastScopeRefresh || Date.now()) + refreshMinutes * 60000 - Date.now());
+    const due = new Date(Date.now() + delay);
     status.textContent = `Next refresh ${due.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"})}`;
     const version = refreshTimerVersion;
     refreshTimer = window.setTimeout(() => {
@@ -3550,11 +3558,12 @@ export function mountFinOps(root: HTMLElement) {
       // The view owns the approved CLI bridge. Do not interfere with provider
       // jobs, mutation execution, or a plan the operator is currently reviewing.
       if (document.hidden || executing || activeJobs.size || $<HTMLDialogElement>("af-review-dialog").open || $<HTMLDialogElement>("af-view-dialog").open) {
+        lastScopeRefresh = Date.now();
         scheduleAutoRefresh();
         return;
       }
       void refreshScope();
-    }, refreshMinutes * 60000);
+    }, delay);
   }
   async function refreshScope() {
     try {
@@ -3580,13 +3589,16 @@ export function mountFinOps(root: HTMLElement) {
   listen($("af-refresh-interval"), "change", async () => {
     const version = ++refreshSettingVersion;
     const previous = refreshMinutes;
+    const previousRefresh = lastScopeRefresh;
     const selected = Number($<HTMLSelectElement>("af-refresh-interval").value);
     refreshMinutes = [0, 5, 15, 30, 60, 90].includes(selected) ? selected : 0;
+    lastScopeRefresh = Date.now();
     stopAutoRefresh();
     const saved = await rememberView(true);
     if (!active || version !== refreshSettingVersion) return;
     if (saved === false) {
       refreshMinutes = previous;
+      lastScopeRefresh = previousRefresh;
       $<HTMLSelectElement>("af-refresh-interval").value = String(previous);
       // Replace any debounced root-event save that captured the rejected value.
       rememberView();
@@ -3766,12 +3778,6 @@ export function mountFinOps(root: HTMLElement) {
         if (active) rememberView();
       });
     });
-  const staleTimer = window.setInterval(() => {
-    if (snapshot && Date.now() - Date.parse(snapshot.fetchedAt) > 300000)
-      $("af-freshness").textContent =
-        `STALE · updated ${new Date(snapshot.fetchedAt).toLocaleString()}`;
-  }, 10000);
-  disposers.push(() => window.clearInterval(staleTimer));
   void (async () => {
     try {
       const boot = await request("bootstrap");
@@ -3786,7 +3792,8 @@ export function mountFinOps(root: HTMLElement) {
       syncNavigation();
       $("af-mode-badge").textContent = settings.mode.toUpperCase();
       connection();
-      accounts = await run("accounts");
+      const cached = boot.cachedView;
+      accounts = cached?.accounts ?? await run("accounts");
       if (!accounts.length) {
         navigate("settings");
         report(
@@ -3841,7 +3848,18 @@ export function mountFinOps(root: HTMLElement) {
       viewOptions();
       $<HTMLSelectElement>("af-refresh-interval").disabled = false;
       const restoreTicket = generation;
-      await loadScope();
+      const cachedScope = cached?.snapshot?.scope;
+      const useCached = restore && cachedScope && JSON.stringify([cachedScope.tenantId, cachedScope.subscriptionId, [...cachedScope.groupIds].sort(), cachedScope.from, cachedScope.to, cachedScope.basis]) === JSON.stringify([scope.tenantId, scope.subscriptionId, [...scope.groupIds].sort(), scope.from, scope.to, scope.basis]);
+      if (useCached) {
+        snapshot = cached.snapshot;
+        groups = cached.groups;
+        groupsReady = true;
+        lastScopeRefresh = refreshMinutes && remembered.refreshDueAt ? remembered.refreshDueAt - refreshMinutes * 60000 : cached.at;
+        groupLabel();
+        connection(snapshot!.cliAccount ?? accounts.find(a => a.id === scope.subscriptionId));
+        renderData();
+        scheduleAutoRefresh();
+      } else await loadScope();
       if (
         restore &&
         snapshot &&
@@ -3855,7 +3873,10 @@ export function mountFinOps(root: HTMLElement) {
             id(remembered.serviceId ?? remembered.selectionId ?? ""),
         );
         if (target && page === "resources" && remembered.selectionId) {
-          await openResource(target);
+          if (useCached) {
+            selection = cached.details[id(target.id)] ?? target;
+            renderResources();
+          } else await openResource(target);
           if (
             generation === restoreTicket &&
             page === "resources" &&
@@ -3876,7 +3897,7 @@ export function mountFinOps(root: HTMLElement) {
           servicePending = target.id;
           renderServices(page);
           try {
-            const inspected = await run("service", { target }, ticket);
+            const inspected = useCached ? cached.services[id(target.id)] : await run("service", { target }, ticket);
             if (ticket === generation && seq === serviceSequence && active) {
               serviceData = inspected;
               servicePending = "";

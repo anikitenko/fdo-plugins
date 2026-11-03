@@ -100,6 +100,7 @@ export function normalizeExploration(input: any, settings: Settings) {
     processScope: settings.processScope,
     page: pages.includes(input.page) ? input.page : "resources",
     refreshMinutes: [0, 5, 15, 30, 60, 90].includes(input.refreshMinutes) ? input.refreshMinutes : 0,
+    refreshDueAt: [5, 15, 30, 60, 90].includes(input.refreshMinutes) ? integer(input.refreshDueAt, Date.now() + input.refreshMinutes * 60000) : 0,
     scope,
     filters,
     columns: Array.isArray(input.columns)

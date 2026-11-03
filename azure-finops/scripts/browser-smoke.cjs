@@ -52,12 +52,14 @@ process.parentPort.postMessage = () => {};
     });
     const errors = [];
     let privileged = 0;
+    let providerReads = 0;
     page.on("pageerror", (e) => errors.push(e.message));
     const bridge = async (type, payload) => {
       if (type !== "UI_MESSAGE") {
         privileged++;
         throw new Error("Demo requested a privileged action");
       }
+      if (payload.handler === "azure-finops.start") providerReads++;
       return {
         result: await sdk.PluginRegistry.callHandler(
           payload.handler,
@@ -245,6 +247,7 @@ process.parentPort.postMessage = () => {};
     await page.getByText("chat-prod", { exact: true }).waitFor();
     await page.locator("#af-refresh-interval").selectOption("15");
     await page.waitForFunction(() => document.getElementById("af-refresh-timing").textContent.startsWith("Next refresh"));
+    const readsBeforeRemount = providerReads;
     await page.evaluate(
       ({ markup, source }) => {
         document.body.innerHTML = markup;
@@ -254,6 +257,7 @@ process.parentPort.postMessage = () => {};
     );
     await page.getByText("chat-prod", { exact: true }).waitFor();
     assert.equal(await page.locator("#af-refresh-interval").inputValue(), "15", "automatic refresh survives a full view remount");
+    assert.equal(providerReads, readsBeforeRemount, "a view remount before the selected interval must reuse cached provider data");
     await page.locator("#af-refresh-interval").selectOption("0");
     await page.waitForFunction(() => document.getElementById("af-refresh-timing").textContent === "Manual refresh");
     assert.equal(

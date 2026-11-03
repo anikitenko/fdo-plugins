@@ -10,6 +10,12 @@ import type {
   Review,
   Operation,
   SavedView,
+  Scope,
+  Snapshot,
+  Account,
+  Group,
+  Resource,
+  ServiceInspection,
 } from "./types.ts";
 import {
   validateScope,
@@ -59,6 +65,43 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
   let durableExplorationJSON: string | undefined;
   let explorationViewId = "";
   const billing = new CostReadCoordinator();
+  // Read-only view restoration cache. Never persisted and never used for action
+  // review, execution, identity verification, or explicit provider refreshes.
+  let cachedAccounts: Account[] | undefined;
+  const viewCache = new Map<string, {at: number; snapshot?: Snapshot; groups?: Group[]; details: Record<string, Resource>; services: Record<string, ServiceInspection>}>();
+  function cacheKey(mode: Mode, scope: Scope) {
+    return JSON.stringify([settings.cli, settings.processScope, mode, scope.tenantId, scope.subscriptionId, [...scope.groupIds].sort(), scope.from, scope.to, scope.basis]);
+  }
+  function cachedRead(mode: Mode, scope: Scope, kind: string, result: unknown, targetId?: string) {
+    const key = cacheKey(mode, scope);
+    const entry = viewCache.get(key) ?? {at: 0, details: {}, services: {}};
+    if (kind === "snapshot") {entry.snapshot = structuredClone(result as Snapshot); entry.at = Date.now();}
+    if (kind === "groups") entry.groups = structuredClone(result as Group[]);
+    if (kind === "detail" && targetId) entry.details[normalizeId(targetId)] = structuredClone(result as Resource);
+    if (kind === "service" && targetId) entry.services[normalizeId(targetId)] = structuredClone(result as ServiceInspection);
+    for (const map of [entry.details, entry.services]) while (Object.keys(map).length > 20) delete map[Object.keys(map)[0]];
+    viewCache.delete(key); viewCache.set(key, entry);
+    while (viewCache.size > 8) viewCache.delete(viewCache.keys().next().value!);
+    return result;
+  }
+  function restoredData(exploration: ReturnType<typeof readExploration>) {
+    if (!exploration || !cachedAccounts) return undefined;
+    const entry = viewCache.get(cacheKey(settings.mode, exploration.scope));
+    if (!entry?.snapshot || !entry.groups || !cachedAccounts.some(a => a.tenantId === exploration.scope.tenantId && a.id === exploration.scope.subscriptionId)) return undefined;
+    // Expired non-manual intervals get a real provider refresh on startup.
+    if (exploration.refreshMinutes && Date.now() >= (exploration.refreshDueAt || entry.at + exploration.refreshMinutes * 60000)) return undefined;
+    const selectionId = exploration.selectionId ? normalizeId(exploration.selectionId) : "";
+    const serviceId = exploration.serviceId ? normalizeId(exploration.serviceId) : "";
+    return structuredClone({
+      at: entry.at,
+      snapshot: entry.snapshot,
+      groups: entry.groups,
+      accounts: cachedAccounts,
+      details: selectionId && entry.details[selectionId] ? {[selectionId]: entry.details[selectionId]} : {},
+      services: serviceId && entry.services[serviceId] ? {[serviceId]: entry.services[serviceId]} : {},
+    });
+  }
+
   function load() {
     if (loaded) return;
     const raw = getStore().get("settings") as Settings | undefined;
@@ -393,10 +436,12 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       explorationViewId = viewId;
       // Drain writes from the previous view before taking the restoration snapshot.
       await persistTail;
+      const exploration = readExploration();
       return {
         settings,
         viewId,
-        exploration: readExploration(),
+        exploration,
+        cachedView: restoredData(exploration),
         storage: "Durable JSON storage ready",
         hostNote:
           "Custom process scope required for the full Azure read/manage journey. Sign in manually; tokens never enter plugin storage.",
@@ -444,6 +489,8 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
           "Enter the host scope ID, without the capability prefix.",
         );
       billing.clear();
+      viewCache.clear();
+      cachedAccounts = undefined;
       settings.cli = input.cli;
       settings.processScope = input.processScope;
       settings.mode = modeOf(input);
@@ -526,9 +573,14 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       load();
       const mode = modeOf(input),
         kind = input.kind;
-      if (kind === "accounts") return start(mode, (p) => p.accounts());
+      if (kind === "accounts") return start(mode, async p => {
+        const accounts = await p.accounts();
+        viewCache.clear();
+        cachedAccounts = structuredClone(accounts);
+        return accounts;
+      });
       const scope = validateScope(input.scope);
-      if (kind === "groups") return start(mode, (p) => p.groups(scope));
+      if (kind === "groups") return start(mode, async p => cachedRead(mode, scope, kind, await p.groups(scope)));
       if (kind === "scan") return start(mode, (p) => p.scan(scope));
       if (kind === "measure") {
         const operation = settings.operations.find(
@@ -549,14 +601,14 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
           return operation;
         });
       }
-      if (kind === "snapshot") return start(mode, (p) => p.snapshot(scope));
+      if (kind === "snapshot") return start(mode, async p => cachedRead(mode, scope, kind, await p.snapshot(scope)));
       if (kind === "service") {
         const target = validateTarget(input.target, true);
-        return start(mode, (p) => p.service(target, scope));
+        return start(mode, async p => cachedRead(mode, scope, kind, await p.service(target, scope), target.id));
       }
       if (kind === "detail") {
         const target = validateTarget(input.target, true);
-        return start(mode, (p) => p.inspect(target, scope));
+        return start(mode, async p => cachedRead(mode, scope, kind, await p.inspect(target, scope), target.id));
       }
       if (kind === "review")
         return start(mode, async (p) => {
@@ -631,6 +683,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       const scope = validateScope(input.scope);
       reviews.delete(review.token);
       executing = true;
+      viewCache.clear();
       return start(review.mode, async (p, job) => {
         try {
           for (const item of review.items) {

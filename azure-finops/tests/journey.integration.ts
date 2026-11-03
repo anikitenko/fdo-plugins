@@ -21,12 +21,13 @@ async function fixture(disk = new Map<string, any>(), trackRefresh = false) {
   win.structuredClone = structuredClone;
   const refreshTimers = new Map<number, {callback: () => void; delay: number}>();
   const snapshotRequests: any[] = [];
+  const providerRequests: any[] = [];
   if (trackRefresh) {
     Object.defineProperty(win.document, "hidden", {value: false, configurable: true});
     const nativeTimeout = win.setTimeout.bind(win), nativeClear = win.clearTimeout.bind(win);
     let timerId = 100000;
     win.setTimeout = (callback: () => void, delay: number, ...args: any[]) => {
-      if (delay >= 300000) {refreshTimers.set(++timerId, {callback, delay}); return timerId;}
+      if (delay >= 290000) {refreshTimers.set(++timerId, {callback, delay}); return timerId;}
       return nativeTimeout(callback, delay, ...args);
     };
     win.clearTimeout = (timer: number) => {if (!refreshTimers.delete(timer)) nativeClear(timer);};
@@ -45,6 +46,7 @@ async function fixture(disk = new Map<string, any>(), trackRefresh = false) {
         return { ok: false, code: "ACCESS_DENIED" };
       }
       const name = payload.handler.replace("azure-finops.", "");
+      if (name === "start") providerRequests.push(structuredClone(payload.content));
       if (name === "start" && payload.content?.kind === "snapshot") snapshotRequests.push(structuredClone(payload.content));
       try {
         return {
@@ -94,6 +96,7 @@ async function fixture(disk = new Map<string, any>(), trackRefresh = false) {
     hostRequests,
     refreshTimers,
     snapshotRequests,
+    providerRequests,
     fireRefresh: () => {
       assert.equal(refreshTimers.size, 1);
       const [key, timer] = [...refreshTimers][0];
@@ -680,6 +683,8 @@ test("Cost changes selected during slow account discovery wins over an older sav
     let waiting = false;
     f.win.createBackendReq = async (type: string, payload: any) => {
       const result = await original(type, payload);
+      // Exercise the cold-start branch; warm remounts now skip account reads.
+      if (payload.handler === "azure-finops.bootstrap") result.data.cachedView = undefined;
       if (
         payload.handler === "azure-finops.poll" &&
         Array.isArray(result?.data?.result) &&
@@ -717,7 +722,7 @@ test("automatic refresh selection survives reloads, refreshes the current scope,
     assert.deepEqual([...first.$("#af-refresh-interval").options].map((o: any) => o.value), ["0", "5", "15", "30", "60", "90"]);
     await first.input("#af-refresh-interval", "15", "change");
     await first.wait(() => first.refreshTimers.size === 1);
-    assert.equal([...first.refreshTimers.values()][0].delay, 900000);
+    assert.ok([...first.refreshTimers.values()][0].delay <= 900000 && [...first.refreshTimers.values()][0].delay > 899000);
     assert.equal(disk.get("exploration").refreshMinutes, 15);
     const before = first.snapshotRequests.length;
     first.fireRefresh();
@@ -738,7 +743,7 @@ test("automatic refresh selection survives reloads, refreshes the current scope,
     abandoned();
     second = await fixture(disk, true);
     assert.equal(second.$("#af-refresh-interval").value, "90");
-    assert.equal([...second.refreshTimers.values()][0].delay, 5400000);
+    assert.ok([...second.refreshTimers.values()][0].delay <= 5400000 && [...second.refreshTimers.values()][0].delay > 5399000);
     assert.match(second.$("#af-refresh-timing").textContent, /Next refresh/);
   } finally {second?.cleanup(); first.dom.window.close();}
 });
@@ -775,5 +780,78 @@ test("failed interval persistence leaves the previous refresh setting and timer 
     assert.equal(f.refreshTimers.size, 0);
     assert.equal(f.$("#af-refresh-timing").textContent, "Manual refresh");
     assert.match(f.$("#af-message").textContent, /could not be saved/);
+  } finally {f.cleanup();}
+});
+
+
+test("manual refresh reuses backend data after view rebuilds instead of restarting provider reads", async () => {
+  const f = await fixture(new Map(), true);
+  try {
+    const initialReads = f.snapshotRequests.length;
+    const timestamp = f.$("#af-freshness").textContent;
+    await f.input('[aria-label="Search resources"]', "vm-dev");
+    f.$("#af-resource-table tbody tr").click();
+    await f.wait(() => f.$(".af-origin-card") && !f.$("#af-detail").textContent.includes("Loading provider evidence"));
+    const providerReads = f.providerRequests.length;
+    f.win.__afFinOpsCleanup();
+    delete f.win.__afFinOpsView;
+    f.win.document.body.innerHTML = render();
+    f.win.eval(onLoad());
+    await f.wait(() => f.$("#af-resource-table tbody tr") && f.$("#af-progress").hidden);
+    assert.equal(f.$("#af-refresh-interval").value, "0");
+    assert.equal(f.refreshTimers.size, 0);
+    assert.equal(f.snapshotRequests.length, initialReads);
+    assert.equal(f.providerRequests.length, providerReads, "Warm remount must not re-read accounts, groups, inventory or resource details");
+    assert.ok(f.$(".af-origin-card"));
+    assert.equal(f.$("#af-freshness").textContent, timestamp);
+    assert.equal(f.$('[aria-label="Search resources"]').value, "vm-dev");
+    await f.click("#af-refresh");
+    await f.wait(() => f.snapshotRequests.length === initialReads + 1 && !f.$("#af-refresh").disabled);
+    await f.input("#af-subscription", OTHER_SUB, "change");
+    await f.wait(() => f.$("#af-context").textContent.includes("Sandbox") && f.$("#af-progress").hidden);
+    assert.equal(f.snapshotRequests.length, initialReads + 2);
+  } finally {f.cleanup();}
+});
+
+test("rebuilding a timed view retains its refresh deadline without an extra Azure refresh", async () => {
+  const f = await fixture(new Map(), true);
+  try {
+    await f.input("#af-refresh-interval", "30", "change");
+    await f.wait(() => f.refreshTimers.size === 1);
+    const due = f.disk.get("exploration").refreshDueAt;
+    const initialReads = f.snapshotRequests.length;
+    f.win.__afFinOpsCleanup();
+    delete f.win.__afFinOpsView;
+    f.win.document.body.innerHTML = render();
+    f.win.eval(onLoad());
+    await f.wait(() => f.$("#af-resource-table tbody tr") && f.refreshTimers.size === 1);
+    assert.equal(f.$("#af-refresh-interval").value, "30");
+    assert.equal(f.snapshotRequests.length, initialReads);
+    const remaining = [...f.refreshTimers.values()][0].delay;
+    assert.ok(remaining <= 1800000 && remaining > 1700000);
+    assert.equal(f.disk.get("exploration").refreshDueAt, due);
+    f.fireRefresh();
+    await f.wait(() => f.snapshotRequests.length === initialReads + 1 && !f.$("#af-refresh").disabled);
+  } finally {f.cleanup();}
+});
+
+
+test("a failed scheduled read waits the chosen interval instead of entering an immediate retry loop", async () => {
+  const f = await fixture(new Map(), true);
+  try {
+    await f.input("#af-refresh-interval", "5", "change");
+    await f.wait(() => f.refreshTimers.size === 1);
+    const original = f.backend.start;
+    f.backend.start = input => {
+      if (input.kind === "snapshot") throw new Error("simulated provider outage");
+      return original(input);
+    };
+    const before = f.snapshotRequests.length;
+    f.fireRefresh();
+    await f.wait(() => f.snapshotRequests.length === before + 1 && !f.$("#af-refresh").disabled);
+    assert.equal(f.refreshTimers.size, 1);
+    const delay = [...f.refreshTimers.values()][0].delay;
+    assert.ok(delay > 299000 && delay <= 300000);
+    assert.match(f.$("#af-freshness").textContent, /Refresh failed/);
   } finally {f.cleanup();}
 });
