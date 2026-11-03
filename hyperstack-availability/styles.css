@@ -320,17 +320,17 @@
     background: #f7f9fd;
   }
 
-  & [data-availability-status="available"] td:last-child {
+  & [data-availability-status="available"] td:nth-child(5) {
     color: var(--hs-success);
     font-weight: 650;
   }
 
-  & [data-availability-status="unavailable"] td:last-child {
+  & [data-availability-status="unavailable"] td:nth-child(5) {
     color: var(--hs-danger);
     font-weight: 650;
   }
 
-  & [data-availability-status="unknown"] td:last-child {
+  & [data-availability-status="unknown"] td:nth-child(5) {
     color: var(--hs-warning);
     font-weight: 650;
   }

@@ -1,3 +1,4 @@
+import {withHyperstackPricing} from "./features/availability/pricing";
 import {createAvailabilityRuntime} from "./features/availability/runtime";
 import {createMonitoringPersistence, createRefreshPreferences} from "./features/availability/monitoring";
 import {createDeploymentCatalogService} from "./features/availability/catalog";
@@ -22,6 +23,7 @@ interface NormalizedStockItem {
   region: string;
   gpu: string;
   flavor: string;
+  gpuCount?: number;
   availableCount: number | null;
   isAvailable: boolean | null;
 }
@@ -133,6 +135,7 @@ function normalizeFlavors(
         region,
         gpu,
         flavor,
+        gpuCount: entry.gpu_count as number,
         availableCount: null,
         isAvailable:
           typeof availability === "boolean"
@@ -227,7 +230,7 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   private availabilityRuntime?: ReturnType<typeof createAvailabilityRuntime>;
   private readonly pluginMetadata: PluginMetadata = {
     name: "Hyperstack availability",
-    version: "1.3.0",
+    version: "1.3.1",
     author: "AleXvWaN",
     description: "Check Hyperstack GPU stock and create one VM when a selected flavor becomes available.",
     icon: "server",
@@ -250,10 +253,10 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
 
   init(): void {
     this.availabilityRuntime?.dispose();
-    const service = createAvailabilityService({
+    const service = withHyperstackPricing(createAvailabilityService({
       provider: HYPERSTACK_PROVIDER,
       timeoutMs: 15_000,
-    });
+    }));
 
     const backend = createAvailabilityRuntime({
       preferences: createRefreshPreferences(() => PluginRegistry.useStore("json")),

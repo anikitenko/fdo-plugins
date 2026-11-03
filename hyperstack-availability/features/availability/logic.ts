@@ -27,6 +27,9 @@ export interface AvailabilityItem {
   readonly availableCount: number | null;
   readonly isAvailable: boolean | null;
   readonly status: AvailabilityStatus;
+  readonly gpuCount?: number;
+  /** Account GPU flavor rate in USD/hour; excludes public IPs and volumes. */
+  readonly hourlyPrice?: number | null;
 }
 
 export interface AvailabilityResponse {
@@ -245,6 +248,7 @@ export function validateAvailabilityResponse(
       region,
       gpu,
       flavor,
+      ...(typeof row.gpuCount === "number" && Number.isSafeInteger(row.gpuCount) && row.gpuCount > 0 ? {gpuCount: row.gpuCount} : {}),
       availableCount,
       isAvailable,
       status: classifyAvailability({ availableCount, isAvailable }),

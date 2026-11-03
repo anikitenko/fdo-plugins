@@ -639,3 +639,15 @@ test("a slow cache read does not swallow commands or overwrite a newer refresh p
   await settle();
   assert.equal(view.document.get("polling").value, "600");
 });
+
+
+test("cached and updated rows display hourly prices without turning missing prices into zero", async t => {
+  let data = {...snapshot("GPU VM", 2), items: [{...snapshot("GPU VM", 2).items[0], hourlyPrice: 12.5 as number | null}]};
+  const view = harness(async () => cached(data));
+  t.after(() => view.dispose());
+  await settle();
+  assert.equal(view.document.get("results-body").querySelector("tr")!.children[5].textContent, "12.50");
+  data = {...data, items: [{...data.items[0], hourlyPrice: null}]};
+  view.fireTimer(); await settle();
+  assert.equal(view.document.get("results-body").querySelector("tr")!.children[5].textContent, "Unavailable");
+});

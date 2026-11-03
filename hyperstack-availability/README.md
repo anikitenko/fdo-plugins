@@ -46,6 +46,8 @@ Stock states mean:
 - **Out of stock:** explicit provider evidence reports no launchable stock.
 - **Unknown availability:** the response does not establish launchable stock. A flavor appearing in a catalog is insufficient.
 
+**Price (USD / hour)** shows the hourly cost of one VM from your account’s [Hyperstack Pricebook](https://docs.hyperstack.cloud/docs/api-reference/get-pricebook/). For GPU flavors, the plugin multiplies the matching GPU resource rate by the API-reported GPU count, as described in [Resource Pricing](https://docs.hyperstack.cloud/docs/billing/pricebook/). Spot flavors use their separate spot rate. Public IPs and attached storage volumes are additional charges. The pricebook is cached in the backend for five minutes per API key; browser cache reads do not call it again. Missing counts, unmatched resources, ambiguous or invalid prices, and pricing access failures display **Unavailable**, without blocking stock monitoring or changing stock status. Your API key needs permission to read the pricebook.
+
 **Available VMs** shows a count only when reported; otherwise it displays **Not reported**. The last successful check timestamp identifies the snapshot’s age. Availability can change before a VM is created, and this plugin does not reserve capacity.
 
 **Backend automatic refresh** supports manual checks or intervals of one, five or ten minutes. The selected interval is flushed to the plugin-scoped JSON store under a separate settings key, and restored after browser reloads, FDO plugin reloads and backend restarts. New installations default to manual checks. All pages share the same backend interval; changing it updates the other pages’ dropdowns. The interval runs from the end of each check, preventing overlap.

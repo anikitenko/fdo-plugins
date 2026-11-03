@@ -371,6 +371,7 @@ test("normalizes identity and derives status without trusting extra fields", () 
       region: "Europe",
       gpu: "A100",
       flavor: "gpu-a100-small",
+      gpuCount: 8,
       availableCount: null,
       isAvailable: null,
       status: "unknown",

@@ -429,6 +429,7 @@ export function renderAvailabilityRows(
       cell(item.gpu),
       dom.createElement("td", {}, badge),
       cell(item.availableCount === null ? "Not reported" : String(item.availableCount)),
+      cell(typeof item.hourlyPrice === "number" && Number.isFinite(item.hourlyPrice) && item.hourlyPrice >= 0 ? item.hourlyPrice.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 4}) : "Unavailable"),
     );
   }).join("");
 }
@@ -475,7 +476,7 @@ export function renderAvailabilityResults(
       ? "The last successful check returned no VM options."
       : "No VM options match these filters. Try another region, GPU or stock status.";
 
-  const headings = ["VM flavor", "Region", "GPU", "Stock status", "Available VMs"];
+  const headings = ["VM flavor", "Region", "GPU", "Stock status", "Available VMs", "Price (USD / hour)"];
   const table = dom.createElement(
     "table",
     {class: classNames("pure-table", "pure-table-horizontal", classes.table)},
@@ -521,6 +522,7 @@ export function renderAvailabilityResults(
       },
     ),
     renderAvailabilitySummary(dom, items, classes),
+    paragraph(dom, "Hourly price is per VM, from your account’s Hyperstack Pricebook, including all GPUs in the flavor. Public IPs and attached volumes cost extra. Unavailable means pricing could not be retrieved or matched.", {class: classes.muted ?? ""}),
     dom.createElement(
       "div",
       {

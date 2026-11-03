@@ -226,6 +226,7 @@ export function createAvailabilityActions() {
             availableCount: item.availableCount,
             isAvailable: item.isAvailable,
             status: item.status,
+            hourlyPrice: typeof item.hourlyPrice === "number" && Number.isFinite(item.hourlyPrice) && item.hourlyPrice >= 0 ? item.hourlyPrice : null,
           });
         }
         return {checkedAt: input.checkedAt, items};
@@ -480,6 +481,7 @@ export function createAvailabilityActions() {
                   ? "Out of stock"
                   : "Unknown availability",
               item.availableCount === null ? "Not reported" : String(item.availableCount),
+              typeof item.hourlyPrice === "number" && Number.isFinite(item.hourlyPrice) && item.hourlyPrice >= 0 ? item.hourlyPrice.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 4}) : "Unavailable",
             ];
             labels.forEach((label, index) => {
               const cell = document.createElement("td");

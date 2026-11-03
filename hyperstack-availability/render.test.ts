@@ -478,7 +478,7 @@ test("renders stock evidence, summary and successful check time", () => {
     const cells = row.children.filter(
       (child): child is MarkupNode => typeof child !== "string" && child.tag === "td",
     );
-    assert.equal(cells.length, 5);
+    assert.equal(cells.length, 6);
     assert.equal(textContent(cells[0]), item.flavor);
     assert.equal(textContent(cells[1]), item.region);
     assert.equal(textContent(cells[2]), item.gpu);
@@ -615,4 +615,14 @@ test("escapes provider data and emits registered styles on repeated renders", ()
   );
   assertRegisteredStyles(root);
   assertRegisteredStyles(render({configuration: ready, snapshot}));
+});
+
+
+test("renders hourly USD prices and an explicit unavailable fallback", () => {
+  const data = {...snapshot, items: snapshot.items.map((item, index) => ({...item, hourlyPrice: index === 0 ? 12.5 : index === 1 ? 0 : null}))};
+  const root = render({configuration: ready, snapshot: data});
+  assert.match(visibleText(root), /Price \(USD \/ hour\)/);
+  const rows = elements(byId(root, ids.resultsBody)).filter(node => node.tag === "tr");
+  const prices = rows.map(row => row.children.filter((child): child is MarkupNode => typeof child !== "string" && child.tag === "td")[5]).map(textContent);
+  assert.deepEqual(prices, ["12.50", "0.00", "Unavailable"]);
 });
