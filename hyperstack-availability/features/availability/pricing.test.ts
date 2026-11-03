@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {withHyperstackPricing} from "./pricing";
+import {withHyperstackPricing, stockConfigurationGpuCount} from "./pricing";
 import {createAvailabilityService} from "./service";
 import type {AvailabilityItem} from "./logic";
 import type {AvailabilityService} from "./service";
@@ -75,4 +75,27 @@ test("GPU allocation survives flavor/stock merging before pricing", async () => 
   const result = await priced.check("key");
   assert.equal(result.ok && result.snapshot.items[0].gpuCount, 8);
   assert.equal(result.ok && result.snapshot.items[0].hourlyPrice, 12);
+});
+
+
+test("stock configurations map to the same per-GPU price as flavors, using allocation rather than available VM count", async () => {
+  const service = withHyperstackPricing(stock([
+    {...item, id: "flavor", gpuCount: 8},
+    {...item, id: "stock-1", flavor: "1x", gpuCount: undefined, availableCount: 36},
+    {...item, id: "stock-2", flavor: "2x", gpuCount: undefined, availableCount: 12},
+    {...item, id: "stock-8", flavor: "8x", gpuCount: undefined, availableCount: 0, status: "unavailable", isAvailable: false},
+    {...item, id: "stock-10", flavor: "10x", gpuCount: undefined, availableCount: 2},
+    {...item, id: "stock-spot", gpu: "H100-spot", flavor: "2x", gpuCount: undefined, availableCount: 12},
+  ]), {fetch: async () => response([{name: "H100", value: "1.5"}, {name: "H100-spot", value: "0.75"}])});
+  const result = await service.check("key");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.snapshot.items.map(i => i.hourlyPrice), [12, 1.5, 3, 12, 15, 1.5]);
+  assert.equal(result.snapshot.items[3].status, "unavailable");
+  assert.equal(result.snapshot.items[1].availableCount, 36);
+});
+
+test("stock GPU count parsing accepts documented configurations without guessing from arbitrary flavor names", () => {
+  for (const [label, count] of [["1x", 1], ["2x", 2], ["4x", 4], ["8x", 8], ["10x", 10]] as const) assert.equal(stockConfigurationGpuCount(label), count);
+  for (const label of ["0x", "-2x", "1.5x", "8x-large", "n3-H100x8", "unknown", "9007199254740992x"]) assert.equal(stockConfigurationGpuCount(label), undefined);
 });

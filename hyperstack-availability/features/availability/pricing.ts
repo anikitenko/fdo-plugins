@@ -1,6 +1,15 @@
 import type {AvailabilityService} from "./service";
 import type {AvailabilityItem} from "./logic";
 
+/** Stock configuration keys are GPU allocations (1x, 2x, 4x, 8x, 10x),
+ * independent of the number of available VMs reported as their values. */
+export function stockConfigurationGpuCount(configuration: string): number | undefined {
+  const match = /^([1-9][0-9]*)x$/i.exec(configuration.trim());
+  if (!match) return undefined;
+  const count = Number(match[1]);
+  return Number.isSafeInteger(count) ? count : undefined;
+}
+
 const ENDPOINT = "https://infrahub-api.nexgencloud.com/v1/pricebook";
 const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const amount = (v: unknown): number | null => {
@@ -65,7 +74,7 @@ export function withHyperstackPricing(service: AvailabilityService, options: {fe
         const time = now();
         const active = rate && (rate.start === null || time >= rate.start) && (rate.end === null || time < rate.end);
         const perGpu = rate ? active ? rate.value : rate.original : null;
-        const count = item.gpuCount;
+        const count = item.gpuCount ?? stockConfigurationGpuCount(item.flavor);
         const total = perGpu != null && typeof count === "number" && Number.isSafeInteger(count) && count > 0 ? perGpu * count : null;
         return {...item, hourlyPrice: total !== null && Number.isFinite(total) && total >= 0 ? total : null};
       });

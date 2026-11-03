@@ -1,4 +1,4 @@
-import {withHyperstackPricing} from "./features/availability/pricing";
+import {withHyperstackPricing, stockConfigurationGpuCount} from "./features/availability/pricing";
 import {createAvailabilityRuntime} from "./features/availability/runtime";
 import {createMonitoringPersistence, createRefreshPreferences} from "./features/availability/monitoring";
 import {createDeploymentCatalogService} from "./features/availability/catalog";
@@ -204,6 +204,7 @@ function normalizeStock(
           region,
           gpu,
           flavor,
+          gpuCount: stockConfigurationGpuCount(flavor),
           availableCount,
           isAvailable: availableCount > 0,
         });
@@ -230,7 +231,7 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   private availabilityRuntime?: ReturnType<typeof createAvailabilityRuntime>;
   private readonly pluginMetadata: PluginMetadata = {
     name: "Hyperstack availability",
-    version: "1.3.1",
+    version: "1.3.2",
     author: "AleXvWaN",
     description: "Check Hyperstack GPU stock and create one VM when a selected flavor becomes available.",
     icon: "server",
