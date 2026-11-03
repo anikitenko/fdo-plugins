@@ -210,3 +210,17 @@ test("startup drains pending writes and drops a queued save from the replaced if
   assert.equal((await opening).exploration?.page, "changes");
   assert.equal(disk.get("exploration").page, "changes");
 });
+
+
+test("automatic refresh interval persists only supported minute values and defaults old views to manual", async () => {
+  for (const refreshMinutes of [0, 5, 15, 30, 60, 90]) {
+    const f = fixture(), b = f.backend();
+    const {viewId} = await b.bootstrap();
+    await b.saveExploration({view: {...preferences(), refreshMinutes}, viewId});
+    const restored = await f.backend().bootstrap();
+    assert.equal(restored.exploration?.refreshMinutes, refreshMinutes);
+  }
+  for (const refreshMinutes of [undefined, null, -5, 1, 300, "5", Infinity]) {
+    assert.equal(normalizeExploration({...preferences(), refreshMinutes}, defaultSettings()).refreshMinutes, 0);
+  }
+});

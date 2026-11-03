@@ -1505,3 +1505,11 @@
 .shell .af-origin-card dl { gap: 4px 12px; }
 .shell .af-origin-card > h3 { margin-top: 12px; }
 .shell .af-compact-timeline li { margin: 7px 0; line-height: 1.35; }
+
+.shell #af-refresh-interval { min-width: 145px; max-width: 165px; font-size: 12px; min-height: 37px; }
+.shell .af-update-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.shell #af-refresh-timing { font-size: 10px; color: #7bbbd8; white-space: nowrap; }
+@media (max-width: 760px) {
+  .shell .af-heading > .af-row { flex-wrap: wrap; }
+  .shell #af-refresh-interval { flex: 1; }
+}

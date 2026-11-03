@@ -5,7 +5,7 @@ import { render, onLoad } from "../render.ts";
 import { createBackend } from "../backend.ts";
 import { SUB, OTHER_SUB } from "../providers/demo.ts";
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
-async function fixture(disk = new Map<string, any>()) {
+async function fixture(disk = new Map<string, any>(), trackRefresh = false) {
   const hostRequests: any[] = [];
   const store = {
     get: (k: string) => disk.get(k),
@@ -19,6 +19,18 @@ async function fixture(disk = new Map<string, any>()) {
     }),
     win = dom.window;
   win.structuredClone = structuredClone;
+  const refreshTimers = new Map<number, {callback: () => void; delay: number}>();
+  const snapshotRequests: any[] = [];
+  if (trackRefresh) {
+    Object.defineProperty(win.document, "hidden", {value: false, configurable: true});
+    const nativeTimeout = win.setTimeout.bind(win), nativeClear = win.clearTimeout.bind(win);
+    let timerId = 100000;
+    win.setTimeout = (callback: () => void, delay: number, ...args: any[]) => {
+      if (delay >= 300000) {refreshTimers.set(++timerId, {callback, delay}); return timerId;}
+      return nativeTimeout(callback, delay, ...args);
+    };
+    win.clearTimeout = (timer: number) => {if (!refreshTimers.delete(timer)) nativeClear(timer);};
+  }
   win.HTMLDialogElement.prototype.showModal = function () {
     this.open = true;
   };
@@ -33,6 +45,7 @@ async function fixture(disk = new Map<string, any>()) {
         return { ok: false, code: "ACCESS_DENIED" };
       }
       const name = payload.handler.replace("azure-finops.", "");
+      if (name === "start" && payload.content?.kind === "snapshot") snapshotRequests.push(structuredClone(payload.content));
       try {
         return {
           ok: true,
@@ -79,6 +92,14 @@ async function fixture(disk = new Map<string, any>()) {
     backend,
     disk,
     hostRequests,
+    refreshTimers,
+    snapshotRequests,
+    fireRefresh: () => {
+      assert.equal(refreshTimers.size, 1);
+      const [key, timer] = [...refreshTimers][0];
+      refreshTimers.delete(key);
+      timer.callback();
+    },
     dom,
     win,
     $,
@@ -683,4 +704,76 @@ test("Cost changes selected during slow account discovery wins over an older sav
     release?.();
     f.cleanup();
   }
+});
+
+
+test("automatic refresh selection survives reloads, refreshes the current scope, and stops on manual or disposal", async () => {
+  const disk = new Map<string, any>();
+  const first = await fixture(disk, true);
+  let second: Awaited<ReturnType<typeof fixture>> | undefined;
+  try {
+    assert.equal(first.$("#af-refresh-interval").value, "0");
+    assert.equal(first.refreshTimers.size, 0);
+    assert.deepEqual([...first.$("#af-refresh-interval").options].map((o: any) => o.value), ["0", "5", "15", "30", "60", "90"]);
+    await first.input("#af-refresh-interval", "15", "change");
+    await first.wait(() => first.refreshTimers.size === 1);
+    assert.equal([...first.refreshTimers.values()][0].delay, 900000);
+    assert.equal(disk.get("exploration").refreshMinutes, 15);
+    const before = first.snapshotRequests.length;
+    first.fireRefresh();
+    await first.wait(() => first.snapshotRequests.length === before + 1 && !first.$("#af-refresh").disabled);
+    assert.equal(first.refreshTimers.size, 1);
+    assert.equal(first.snapshotRequests.at(-1).scope.subscriptionId, SUB);
+    const cancelled = [...first.refreshTimers.values()][0].callback;
+    await first.input("#af-refresh-interval", "0", "change");
+    await first.wait(() => first.refreshTimers.size === 0);
+    cancelled();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(first.snapshotRequests.length, before + 1);
+    await first.input("#af-refresh-interval", "90", "change");
+    await first.wait(() => first.refreshTimers.size === 1);
+    const abandoned = [...first.refreshTimers.values()][0].callback;
+    first.cleanup();
+    assert.equal(first.refreshTimers.size, 0);
+    abandoned();
+    second = await fixture(disk, true);
+    assert.equal(second.$("#af-refresh-interval").value, "90");
+    assert.equal([...second.refreshTimers.values()][0].delay, 5400000);
+    assert.match(second.$("#af-refresh-timing").textContent, /Next refresh/);
+  } finally {second?.cleanup(); first.dom.window.close();}
+});
+
+test("automatic refresh defers while hidden or reviewing actions", async () => {
+  const f = await fixture(new Map(), true);
+  try {
+    await f.input("#af-refresh-interval", "5", "change");
+    await f.wait(() => f.refreshTimers.size === 1);
+    const before = f.snapshotRequests.length;
+    f.$("#af-review-dialog").open = true;
+    f.fireRefresh();
+    assert.equal(f.snapshotRequests.length, before);
+    assert.equal(f.refreshTimers.size, 1);
+    f.$("#af-review-dialog").open = false;
+    Object.defineProperty(f.win.document, "hidden", {value: true, configurable: true});
+    f.fireRefresh();
+    assert.equal(f.snapshotRequests.length, before);
+    assert.equal(f.refreshTimers.size, 1);
+    Object.defineProperty(f.win.document, "hidden", {value: false, configurable: true});
+    f.fireRefresh();
+    await f.wait(() => f.snapshotRequests.length === before + 1 && !f.$("#af-refresh").disabled);
+    assert.equal(f.refreshTimers.size, 1);
+  } finally {f.cleanup();}
+});
+
+
+test("failed interval persistence leaves the previous refresh setting and timer intact", async () => {
+  const f = await fixture(new Map(), true);
+  try {
+    f.backend.saveExploration = async () => {throw new Error("storage unavailable");};
+    await f.input("#af-refresh-interval", "5", "change");
+    await f.wait(() => f.$("#af-refresh-interval").value === "0");
+    assert.equal(f.refreshTimers.size, 0);
+    assert.equal(f.$("#af-refresh-timing").textContent, "Manual refresh");
+    assert.match(f.$("#af-message").textContent, /could not be saved/);
+  } finally {f.cleanup();}
 });

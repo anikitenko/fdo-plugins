@@ -243,6 +243,8 @@ process.parentPort.postMessage = () => {};
       .getByRole("button", { name: "Inspect service", exact: true })
       .click();
     await page.getByText("chat-prod", { exact: true }).waitFor();
+    await page.locator("#af-refresh-interval").selectOption("15");
+    await page.waitForFunction(() => document.getElementById("af-refresh-timing").textContent.startsWith("Next refresh"));
     await page.evaluate(
       ({ markup, source }) => {
         document.body.innerHTML = markup;
@@ -251,6 +253,9 @@ process.parentPort.postMessage = () => {};
       { markup: render, source: onLoad },
     );
     await page.getByText("chat-prod", { exact: true }).waitFor();
+    assert.equal(await page.locator("#af-refresh-interval").inputValue(), "15", "automatic refresh survives a full view remount");
+    await page.locator("#af-refresh-interval").selectOption("0");
+    await page.waitForFunction(() => document.getElementById("af-refresh-timing").textContent === "Manual refresh");
     assert.equal(
       await page.locator('[data-page="foundry"]').getAttribute("aria-current"),
       "page",

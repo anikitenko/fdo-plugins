@@ -163,6 +163,10 @@ export function mountFinOps(root: HTMLElement) {
     string,
     { query: string; category: string; index: number; candidatePage: number }
   > = {};
+  let refreshMinutes = 0;
+  let refreshTimer: number | undefined;
+  let refreshTimerVersion = 0;
+  let refreshSettingVersion = 0;
   let viewSaveTimer: number | undefined;
   let viewSaveWarning = false;
   let explorationViewId = "",
@@ -197,6 +201,7 @@ export function mountFinOps(root: HTMLElement) {
       cli: settings.cli,
       processScope: settings.processScope,
       page: nextPage,
+      refreshMinutes,
       scope,
       filters,
       columns,
@@ -521,6 +526,7 @@ export function mountFinOps(root: HTMLElement) {
           : "Live · connection not checked";
   }
   function invalidate() {
+    stopAutoRefresh();
     connection();
     generation++;
     detailSequence++;
@@ -536,6 +542,7 @@ export function mountFinOps(root: HTMLElement) {
     message("Loading the new scope. Previous results have been cleared.");
   }
   async function loadScope(preserve = false) {
+    stopAutoRefresh();
     let ticket = generation;
     const oldProfile = snapshot?.cliAccount;
     let view = preserve
@@ -679,6 +686,8 @@ export function mountFinOps(root: HTMLElement) {
             ),
           );
       }
+    } finally {
+      if (ticket === generation) scheduleAutoRefresh();
     }
   }
   function disposeCharts() {
@@ -3521,24 +3530,68 @@ export function mountFinOps(root: HTMLElement) {
     );
     if (nav) void selectPage(nav.dataset.page!).catch(report);
   });
-  listen($("af-refresh"), "click", async () => {
-    try {
-      if (!scope) {
-        navigate("settings");
+  function stopAutoRefresh() {
+    refreshTimerVersion++;
+    if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+  }
+  function scheduleAutoRefresh() {
+    stopAutoRefresh();
+    if (!active) return;
+    const status = $("af-refresh-timing");
+    if (!refreshMinutes) {status.textContent = "Manual refresh"; return;}
+    if (refreshing || !snapshot) {status.textContent = refreshing ? "Refreshing…" : "Waiting for scope data"; return;}
+    const due = new Date(Date.now() + refreshMinutes * 60000);
+    status.textContent = `Next refresh ${due.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"})}`;
+    const version = refreshTimerVersion;
+    refreshTimer = window.setTimeout(() => {
+      if (!active || version !== refreshTimerVersion || !refreshMinutes) return;
+      refreshTimer = undefined;
+      // The view owns the approved CLI bridge. Do not interfere with provider
+      // jobs, mutation execution, or a plan the operator is currently reviewing.
+      if (document.hidden || executing || activeJobs.size || $<HTMLDialogElement>("af-review-dialog").open || $<HTMLDialogElement>("af-view-dialog").open) {
+        scheduleAutoRefresh();
         return;
       }
-      if (refreshing) return;
+      void refreshScope();
+    }, refreshMinutes * 60000);
+  }
+  async function refreshScope() {
+    try {
+      if (!active || refreshing || activeJobs.size) return;
+      if (!scope) {navigate("settings"); return;}
       refreshing = true;
+      stopAutoRefresh();
+      $("af-refresh-timing").textContent = "Refreshing…";
       $<HTMLButtonElement>("af-refresh").disabled = true;
-      try {
-        await loadScope(true);
-      } finally {
+      const period = $<HTMLSelectElement>("af-period").value;
+      if (["7", "30", "mtd"].includes(period)) scope = {...scope, ...scopeDates(period)};
+      try {await loadScope(true);}
+      finally {
         refreshing = false;
-        $<HTMLButtonElement>("af-refresh").disabled = false;
+        if (active) {
+          $<HTMLButtonElement>("af-refresh").disabled = false;
+          scheduleAutoRefresh();
+        }
       }
-    } catch (e) {
-      report(e);
+    } catch (e) {report(e);}
+  }
+  listen($("af-refresh"), "click", () => {void refreshScope();});
+  listen($("af-refresh-interval"), "change", async () => {
+    const version = ++refreshSettingVersion;
+    const previous = refreshMinutes;
+    const selected = Number($<HTMLSelectElement>("af-refresh-interval").value);
+    refreshMinutes = [0, 5, 15, 30, 60, 90].includes(selected) ? selected : 0;
+    stopAutoRefresh();
+    const saved = await rememberView(true);
+    if (!active || version !== refreshSettingVersion) return;
+    if (saved === false) {
+      refreshMinutes = previous;
+      $<HTMLSelectElement>("af-refresh-interval").value = String(previous);
+      // Replace any debounced root-event save that captured the rejected value.
+      rememberView();
     }
+    scheduleAutoRefresh();
   });
   listen($("af-groups-button"), "click", () => {
     if (!groupsReady) {
@@ -3774,6 +3827,8 @@ export function mountFinOps(root: HTMLElement) {
         direction = remembered.direction === "asc" ? "asc" : "desc";
         tablePage = Math.max(0, Number(remembered.tablePage) || 0);
         detailWidth = Number(remembered.detailWidth) || 0;
+        refreshMinutes = [0, 5, 15, 30, 60, 90].includes(remembered.refreshMinutes) ? remembered.refreshMinutes : 0;
+        $<HTMLSelectElement>("af-refresh-interval").value = String(refreshMinutes);
         Object.assign(serviceSearch, remembered.serviceSearch ?? {});
         Object.assign(assetViews, remembered.assetViews ?? {});
         $<HTMLSelectElement>("af-basis").value = scope.basis;
@@ -3784,6 +3839,7 @@ export function mountFinOps(root: HTMLElement) {
       }
       accountControls();
       viewOptions();
+      $<HTMLSelectElement>("af-refresh-interval").disabled = false;
       const restoreTicket = generation;
       await loadScope();
       if (
@@ -3868,6 +3924,7 @@ export function mountFinOps(root: HTMLElement) {
       if (ownsWindow) void saveExploration(win.__afFinOpsView);
     }
     active = false;
+    stopAutoRefresh();
     delete (root as any).__afCleanup;
     if (win.__afFinOpsCleanup === cleanup) delete win.__afFinOpsCleanup;
     generation++;

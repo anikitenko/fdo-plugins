@@ -234,8 +234,9 @@ export function render(): string {
           dom.createElement(
             "div",
             { class: "af-row" },
+            select("af-refresh-interval", [["Manual refresh", "0"], ["Every 5 minutes", "5"], ["Every 15 minutes", "15"], ["Every 30 minutes", "30"], ["Every 60 minutes", "60"], ["Every 90 minutes", "90"]], {disabled: "disabled", "aria-label": "Automatic refresh interval", title: "Refresh the current scope while this view is open. Selection is saved."}),
             button("af-refresh", "↻ Refresh"),
-            text.createSmallText("Loading…", {}, "af-freshness"),
+            dom.createElement("div", {class: "af-update-meta"}, text.createSmallText("Loading…", {}, "af-freshness"), dom.createElement("small", {id: "af-refresh-timing", "aria-live": "polite"}, "Manual refresh")),
           ),
         ],
         { classes: ["af-heading"], disableDefaultClass: true },
