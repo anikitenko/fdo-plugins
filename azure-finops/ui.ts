@@ -27,6 +27,37 @@ export function mountFinOps(root: HTMLElement) {
     n.className = cls;
     return n;
   };
+  const glyph = (kind: string, cls = "") => {
+    const span = el("span", "", "af-glyph " + cls);
+    span.setAttribute("aria-hidden", "true");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 32 32");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.8");
+    const paths: Record<string, string> = {
+      desktop: "M3 5h26v18H3z M12 24v4m8-4v4M9 29h14 M13 11l3 6 4-6",
+      database: "M5 7c0-6 22-6 22 0v18c0 6-22 6-22 0z M5 7c0 6 22 6 22 0 M5 16c0 6 22 6 22 0",
+      cube: "m16 3 12 7v13l-12 7-12-7V10z M4 10l12 7 12-7 M16 17v13",
+      globe: "M3 16a13 13 0 1 0 26 0 13 13 0 1 0-26 0 M3 16h26 M16 3c-9 8-9 18 0 26 9-8 9-18 0-26",
+      storage: "M4 4h24v24H4z M9 10h2m5 0h2m5 0h1 M9 17h2m5 0h2m5 0h1 M9 23h2m5 0h2m5 0h1",
+      calendar: "M5 6h22v23H5z M10 2v8m12-8v8M5 13h22 M10 18h4m4 0h4",
+      leaf: "M27 3C7 2 1 13 8 24S28 25 27 3 M4 30 23 8",
+      user: "M10 9a6 6 0 1 0 12 0 6 6 0 1 0-12 0 M6 29v-4c0-10 20-10 20 0v4",
+      change: "M3 25l9-10 6 5L29 6 M21 6h8v8",
+    };
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", paths[kind] ?? paths.cube);
+    svg.append(path); span.append(svg); return span;
+  };
+  const resourceSymbol = (r: Resource) => glyph(r.type.toLowerCase().includes("virtualmachines") ? "desktop" : r.type.toLowerCase().endsWith("/disks") ? "database" : r.type.toLowerCase().includes("publicip") ? "globe" : r.type.toLowerCase().includes("storage") ? "storage" : "cube", "af-resource-symbol");
+  const resourceKind = (r: Resource) => r.type.toLowerCase().includes("virtualmachines") ? "Virtual machine" : r.type.toLowerCase().endsWith("/disks") ? "Managed disk" : r.type.toLowerCase().includes("publicip") ? "Public IP" : r.type.split("/").at(-1)!;
+  function workspaceTitle() {
+    if (page !== "resources" || !scope) return navNames[page];
+    const subscription = accounts.find(a => a.id === scope.subscriptionId)?.name ?? "Resources";
+    const group = scope.groupIds.length ? groups.find(g => id(g.id) === scope.groupIds[0])?.name ?? scope.groupIds[0].split("/").at(-1) : "All resources";
+    return `${subscription} / ${group}${scope.groupIds.length > 1 ? ` +${scope.groupIds.length - 1}` : ""}`;
+  }
   const disposers: (() => void)[] = [];
   const charts: any[] = [];
   const listen = (node: EventTarget, event: string, fn: any) => {
@@ -37,9 +68,10 @@ export function mountFinOps(root: HTMLElement) {
   const money = (amount: number | null | undefined, currency = "USD") =>
     amount == null
       ? "Not returned"
-      : new Intl.NumberFormat(undefined, {
+      : new Intl.NumberFormat("en-US", {
           style: "currency",
           currency: /^[A-Z]{3}$/.test(currency) ? currency : "USD",
+          minimumFractionDigits: 0,
           maximumFractionDigits: 2,
         }).format(amount) +
         (currency === "Unknown" ? " (currency unknown)" : "");
@@ -100,7 +132,7 @@ export function mountFinOps(root: HTMLElement) {
     tablePage = 0,
     sort = "cost",
     direction = "desc",
-    columns = ["name", "cost", "age", "owner", "state", "findings"];
+    columns = ["name", "cost", "age", "findings"];
   let filters: Record<string, string> = {
       search: "",
       type: "",
@@ -231,6 +263,13 @@ export function mountFinOps(root: HTMLElement) {
   function message(text: string, error = false) {
     const box = $("af-message");
     box.hidden = !text;
+    const notes = $<HTMLDetailsElement>("af-data-notes");
+    if (notes) {
+      notes.hidden = !text;
+      notes.open = error && Boolean(text);
+      const summary = notes.querySelector("summary");
+      if (summary) summary.textContent = error ? "Connection or data issue" : "Data coverage & notes";
+    }
     box.dataset.fdoVariant = error ? "error" : "info";
     box.setAttribute("role", error ? "alert" : "status");
     box.querySelector('[data-fdo-slot="message"]')!.textContent = text;
@@ -419,6 +458,7 @@ export function mountFinOps(root: HTMLElement) {
       : selected.length <= 2
         ? selected.map((g) => g.name).join(" + ")
         : `${selected.length} groups selected`;
+    $("af-groups-button").setAttribute("aria-label", "Resource groups: " + $("af-groups-button").textContent);
   }
   function drawGroupPicker() {
     const box = $("af-group-list");
@@ -441,7 +481,9 @@ export function mountFinOps(root: HTMLElement) {
         else pendingGroups.delete(id(g.id));
         drawGroupPicker();
       };
+      const count = snapshot?.resources.filter(r => id(r.groupId) === id(g.id)).length;
       l.append(c, el("span", g.name));
+      if (count !== undefined) l.append(el("small", `${count} resources`));
       box.append(l);
     }
     if (!groups.length)
@@ -704,15 +746,15 @@ export function mountFinOps(root: HTMLElement) {
     const rows = [
       [
         "database",
-        "Selected-period spend",
+        `Spend / ${Math.max(1, Math.round((Date.parse(scope.to) - Date.parse(scope.from)) / 86400000))}d`,
         showTotal(total(snapshot.costs)),
         scope.basis === "ActualCost" ? "Actual cost" : "Amortized cost",
       ],
       [
-        "calendar",
-        "Month-to-date spend",
-        showTotal(total(snapshot.mtd)),
-        `UTC · through ${snapshot.now.slice(0, 10)}`,
+        "change",
+        "Change vs previous period",
+        showTotal(total(snapshot.costs).map(current => ({currency: current.currency, amount: current.amount - (total(snapshot!.previous).find(prior => prior.currency === current.currency)?.amount ?? 0)}))),
+        "Equivalent preceding period",
       ],
       [
         "leaf",
@@ -735,12 +777,16 @@ export function mountFinOps(root: HTMLElement) {
         "Owner tag · distinct from creator",
       ],
     ];
-    for (const [icon, label, value, detail] of rows) {
-      const card = el("div", "", "af-card"),
-        i = el("i", "", "fa-solid fa-" + icon);
-      i.setAttribute("aria-hidden", "true");
+    for (const [index, [icon, label, value, detail]] of [rows[0], rows[1], rows[3], rows[2], rows[4]].entries()) {
+      const card = el("div", "", "af-card af-stat-" + index),
+        i = glyph(icon);
       const d = el("div");
-      d.append(el("small", label), el("strong", value), el("small", detail));
+      d.append(el("small", label), el("strong", value + (index === 3 ? "/mo" : "")), el("small", detail));
+      card.title = detail;
+      if (index === 1) {
+        const deltas = total(snapshot.costs).map(current => current.amount - (total(snapshot!.previous).find(prior => prior.currency === current.currency)?.amount ?? 0));
+        card.classList.toggle("af-down", deltas.length > 0 && deltas.every(delta => delta <= 0));
+      }
       card.append(i, d);
       box.append(card);
     }
@@ -749,12 +795,25 @@ export function mountFinOps(root: HTMLElement) {
     if (!snapshot) return;
     disposeCharts();
     cards();
-    $("af-title").textContent = navNames[page];
+    $("af-title").textContent = workspaceTitle();
+    $("af-scope-summary").textContent = `${accounts.find(a => a.id === scope.subscriptionId)?.name ?? "Subscription"} · ${scope.groupIds.length || groups.length} resource groups · ${snapshot.resources.length} resources`;
     $("af-context").textContent =
       `${accounts.find((a) => a.id === scope.subscriptionId)?.name ?? scope.subscriptionId} · ${scope.groupIds.length ? `${scope.groupIds.length} resource groups` : "All accessible groups"} · ${scope.from.slice(0, 10)} → ${scope.to.slice(0, 10)} UTC · ${scope.basis}`;
     $("af-freshness").textContent =
       `Updated ${new Date(snapshot.fetchedAt).toLocaleString()}${Date.now() - Date.parse(snapshot.fetchedAt) > 300000 ? " · STALE" : ""}${snapshot.coverage.billingFreshness ? " · " + snapshot.coverage.billingFreshness : ""}`;
     message(snapshot.warnings.join(" "));
+    $("af-heading-mode").textContent = settings.mode === "demo" ? "Demo" : "Live";
+    const alert = $("af-cost-alert");
+    const increase = costChanges().find(change => change.delta > 0);
+    alert.replaceChildren();
+    alert.hidden = !increase || page !== "resources";
+    if (increase && page === "resources") {
+      const copy = el("div", "", "af-row");
+      copy.append(el("span", "⚠", "af-alert-icon"), el("strong", "Cost increase"), el("span", `· ${increase.name} +${money(increase.delta, increase.currency)}`), button("Investigate →", () => selectPage("changes"), "af-link-button"));
+      const dismiss = button("×", () => {alert.hidden = true;}, "af-alert-dismiss");
+      dismiss.setAttribute("aria-label", "Dismiss cost increase notice");
+      alert.append(copy, dismiss);
+    }
     if (page === "resources") renderResources();
     else if (page === "overview") renderOverview();
     else if (page === "groups") renderGroups();
@@ -797,7 +856,7 @@ export function mountFinOps(root: HTMLElement) {
         "aria-current",
         b.dataset.page === page ? "page" : "false",
       );
-    $("af-title").textContent = navNames[page];
+    $("af-title").textContent = workspaceTitle();
   }
   function navigate(next: string) {
     const changed = page !== next;
@@ -879,6 +938,7 @@ export function mountFinOps(root: HTMLElement) {
       ),
       panel = el("section", "", "af-panel"),
       header = el("div", "", "af-row af-between");
+    header.classList.add("af-resource-heading");
     header.append(
       el("h2", "Resources"),
       button("Export current table", exportTable),
@@ -1009,11 +1069,11 @@ export function mountFinOps(root: HTMLElement) {
       extra = el("div", "", "af-extra-filters");
     more.append(el("summary", "More filters & columns"), extra);
     for (const [key, label, values] of choices)
-      (["preset", "type", "age", "owner", "finding"].includes(key)
+      (["type", "age", "owner", "finding"].includes(key)
         ? bar
         : extra
       ).append(
-        select(label, values, filters[key], (value) => {
+        select(label, values.map(([v, t]) => [v, !v && ["type", "age", "owner", "finding"].includes(key) ? label : t]), filters[key], (value) => {
           filters[key] = value;
           tablePage = 0;
           drawRows();
@@ -1029,7 +1089,7 @@ export function mountFinOps(root: HTMLElement) {
       drawRows();
     };
     extra.append(tag);
-    bar.append(
+    extra.append(
       button("Clear filters", () => {
         filters = Object.fromEntries(Object.keys(filters).map((k) => [k, ""]));
         tablePage = 0;
@@ -1070,7 +1130,9 @@ export function mountFinOps(root: HTMLElement) {
     wrap.id = "af-resource-table";
     const footer = el("div", "", "af-pagination");
     footer.id = "af-resource-footer";
-    panel.append(bar, more, wrap, footer);
+    header.append(more);
+    panel.append(bar, wrap, footer);
+    panel.classList.add("af-resources-panel");
     const detail = el("aside", "", "af-panel af-detail");
     detail.id = "af-detail";
     detail.hidden = !selection;
@@ -1265,6 +1327,10 @@ export function mountFinOps(root: HTMLElement) {
     const t = el("table"),
       head = el("thead"),
       hr = el("tr");
+    t.dataset.compact = String(columns.join(",") === "name,cost,age,findings");
+    const selectionHeader = el("th", "", "af-selection-cell");
+    selectionHeader.setAttribute("aria-label", "Inspected resource");
+    hr.append(selectionHeader);
     for (const c of columns) {
       const th = el("th");
       th.setAttribute(
@@ -1277,7 +1343,7 @@ export function mountFinOps(root: HTMLElement) {
       );
       th.append(
         button(
-          c + (sort === c ? (direction === "asc" ? " ↑" : " ↓") : ""),
+          ({name: "Resource", cost: "Cost / period", age: "Age", findings: "Finding"}[c] ?? c) + (sort === c ? (direction === "asc" ? " ↑" : " ↓") : ""),
           () => {
             if (sort === c) direction = direction === "asc" ? "desc" : "asc";
             else {
@@ -1290,6 +1356,9 @@ export function mountFinOps(root: HTMLElement) {
       );
       hr.append(th);
     }
+    const actionsHeader = el("th", "");
+    actionsHeader.setAttribute("aria-label", "Resource actions");
+    hr.append(actionsHeader);
     head.append(hr);
     const body = el("tbody");
     for (const r of rows.slice(tablePage * 12, tablePage * 12 + 12)) {
@@ -1303,33 +1372,33 @@ export function mountFinOps(root: HTMLElement) {
       const open = () => openResource(r);
       tr.onclick = open;
       tr.onkeydown = (e) => {
+        if (e.target !== tr) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           open();
         }
       };
+      const choice = el("input");
+      choice.type = "radio";
+      choice.name = "af-inspected-resource";
+      choice.className = "af-row-choice";
+      choice.checked = Boolean(selection && id(selection.id) === id(r.id));
+      choice.setAttribute("aria-label", `Inspect ${r.name}`);
+      const choiceCell = el("td", "", "af-selection-cell");
+      choiceCell.append(choice); tr.append(choiceCell);
       for (const c of columns) {
         const td = el("td");
         if (c === "name") {
-          const div = el("div", "", "af-resource-name"),
-            i = el(
-              "i",
-              "",
-              "fa-solid fa-" +
-                (r.type.toLowerCase().includes("virtualmachines")
-                  ? "desktop"
-                  : r.type.toLowerCase().endsWith("/disks")
-                    ? "database"
-                    : "cube"),
-            );
-          i.setAttribute("aria-hidden", "true");
-          div.append(i, el("strong", r.name));
+          td.title = r.name + " · " + resourceKind(r) + " · " + values.group;
+          const div = el("div", "", "af-resource-name");
+          div.append(resourceSymbol(r), el("strong", r.name));
           td.append(
             div,
-            el("small", r.type.split("/").at(-1) + " · " + values.group),
+            el("small", resourceKind(r) + " · " + values.group),
           );
         } else if (c === "findings") {
           const fs = resourceFindings(r);
+          td.title = fs.map(f => f.title).join(" · ");
           td.append(
             fs.length
               ? badge(fs[0].title, "af-warning")
@@ -1338,6 +1407,10 @@ export function mountFinOps(root: HTMLElement) {
         } else td.textContent = String((values as any)[c]);
         tr.append(td);
       }
+      const menu = button("⋯", async () => {await openResource(r); detailTab = "actions"; renderDetail();}, "af-row-menu");
+      menu.setAttribute("aria-label", `Actions for ${r.name}`);
+      menu.addEventListener("click", event => event.stopPropagation());
+      const menuCell = el("td"); menuCell.append(menu); tr.append(menuCell);
       body.append(tr);
     }
     t.append(head, body);
@@ -1422,22 +1495,21 @@ export function mountFinOps(root: HTMLElement) {
     if (!panel || !selection) return;
     const r = selection;
     panel.replaceChildren();
-    const header = el("div", "", "af-row af-between");
-    header.append(
-      el("h3", r.name),
-      button("×", () => {
-        selection = undefined;
-        detailSequence++;
-        panel.hidden = true;
-        root.querySelector(".af-layout")?.classList.add("af-no-detail");
-        drawRows();
-      }),
-    );
-    panel.append(
-      header,
-      el("small", `${r.groupId.split("/").at(-1)} · ${r.location}`),
-      badge(r.state, /running/i.test(r.state) ? "af-success" : ""),
-    );
+    const header = el("div", "", "af-detail-heading");
+    const identity = el("div", "", "af-detail-identity");
+    const name = el("div", "", "af-detail-name");
+    name.append(el("h3", r.name), badge(r.state, /running/i.test(r.state) ? "af-success" : ""), el("small", `${r.groupId.split("/").at(-1)} · ${r.location}`));
+    identity.append(resourceSymbol(r), name);
+    const portal = el("a", "Open in portal ↗", "af-portal-link");
+    portal.href = `https://portal.azure.com/#@${encodeURIComponent(r.tenantId)}/resource${r.id.split("/").map(encodeURIComponent).join("/")}/overview`;
+    portal.target = "_blank"; portal.rel = "noopener noreferrer";
+    const close = button("×", () => {
+      selection = undefined; detailSequence++; panel.hidden = true;
+      root.querySelector(".af-layout")?.classList.add("af-no-detail"); drawRows();
+    }, "af-close-detail");
+    close.setAttribute("aria-label", "Close resource details");
+    header.append(identity, portal, close);
+    panel.append(header);
     const tabs = el("div", "", "af-detail-tabs");
     tabs.setAttribute("role", "tablist");
     for (const [v, t] of [
@@ -1641,7 +1713,42 @@ export function mountFinOps(root: HTMLElement) {
           "af-muted",
         ),
       );
-    const actions = el("div", "", "af-row");
+    if (detailTab === "origin") {
+      const supporting = el("details", "", "af-supporting-evidence");
+      supporting.append(el("summary", "Evidence, history & coverage details"), ...Array.from(body.children));
+      const card = el("section", "", "af-origin-card");
+      const heading = el("div", "", "af-row af-between");
+      heading.append(el("h3", "Origin & ownership"), badge(`Evidence: ${r.created.confidence}`, r.created.confidence === "Verified" ? "af-success" : "af-warning"));
+      const dl = el("dl");
+      const line = (caption: string, value: string, signal?: typeof r.created) => {
+        const dd = el("dd", value);
+        if (signal) {dd.append(document.createTextNode(" · "), badge(signal.confidence, signal.confidence === "Verified" ? "af-success" : "af-warning")); dd.title = signal.source + (signal.explanation ? " · " + signal.explanation : "");}
+        dl.append(el("dt", caption), dd);
+      };
+      const days = age(r);
+      line("Created", r.created.value ? `${new Date(r.created.value).toLocaleDateString("en-GB", {day: "2-digit", month: "short", year: "numeric"})}${days == null ? "" : ` · ${days} days ago`}` : "Unknown");
+      line("Evidence", r.created.source, r.created);
+      line("Created by", r.creator.value ?? "Unknown", r.creator);
+      line("Owner", r.tags.owner ? `${r.tags.owner} · Tag` : "Missing owner tag");
+      line("Provisioned with", r.provisioning.value ?? "Unknown", r.provisioning);
+      card.append(heading, dl, el("small", "ⓘ Creator and current owner may differ."), el("h3", "Timeline"));
+      const timeline = el("ol", "", "af-timeline af-compact-timeline");
+      for (const event of [...r.events].sort((a, b) => String(a.at).localeCompare(String(b.at))).slice(-4)) {
+        const row = el("li");
+        row.append(el("time", new Date(event.at).toLocaleString("en-GB", {day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"})), el("span", event.title), el("small", event.source));
+        timeline.append(row);
+      }
+      if (!r.events.length) timeline.append(el("li", "No retained evidence returned."));
+      card.append(timeline);
+      const related = el("section", "", "af-related-card");
+      const relationHeader = el("div", "", "af-row af-between");
+      relationHeader.append(el("h3", "Related resources"), el("small", r.gaps.length || !r.lockCoverage ? "Discovery: Partial ⓘ" : "Reported relationships"));
+      related.append(relationHeader, button(`${r.dependencies.length} known linked resources ↗`, () => {detailTab = "dependencies"; renderDetail();}, "af-link-button"));
+      body.append(card, related, supporting);
+    }
+    const actions = el("div", "", "af-row af-detail-actions");
+    const moreActions = el("details", "", "af-secondary-actions");
+    moreActions.append(el("summary", "More VM actions"));
     if (r.type.split("/").length === 2)
       actions.append(
         button("Edit tags", () => {
@@ -1657,7 +1764,7 @@ export function mountFinOps(root: HTMLElement) {
         ["stop", "Power off"],
         ["deallocate", "Deallocate"],
       ])
-        actions.append(
+        (kind === "deallocate" ? actions : moreActions).append(
           button(`Propose ${label.toLowerCase()}…`, () => addAction(kind, r)),
         );
     }
@@ -1706,14 +1813,10 @@ export function mountFinOps(root: HTMLElement) {
       actions.append(
         button("Propose deletion…", () => addAction("delete", r), "af-danger"),
       );
-    body.append(
-      actions,
-      el(
-        "small",
-        "Proposed actions retain this exact tenant, subscription and resource ID. Review dependencies before execution.",
-      ),
-    );
-    panel.append(body);
+    const footer = el("footer", "", "af-detail-footer");
+    if (moreActions.children.length > 1) body.append(moreActions);
+    footer.append(actions, el("small", "ⓘ Review the exact targets and dependencies before submitting the plan."));
+    panel.append(body, footer);
   }
   function tagForm() {
     const panel = $("af-detail"),

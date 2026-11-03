@@ -47,7 +47,7 @@ process.parentPort.postMessage = () => {};
       headless: true,
     });
     const page = await browser.newPage({
-      viewport: { width: 1680, height: 1100 },
+      viewport: { width: 1586, height: 992 },
       deviceScaleFactor: 1,
     });
     const errors = [];

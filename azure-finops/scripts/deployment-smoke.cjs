@@ -54,7 +54,7 @@ const sdk = require("@anikitenko/fdo-sdk"),
     assert.equal(transport.error, undefined);
     const html = JSON.parse(transport.render);
     assert.match(html, /id="azure-finops"/);
-    assert.match(html, /grid-template-columns:228px/);
+    assert.match(html, /grid-template-columns:266px/);
     assert.equal(typeof JSON.parse(transport.onLoad), "string");
     const { normalizePluginRenderPayload } = require(process.argv[4]);
     const checked = normalizePluginRenderPayload(transport);

@@ -2,6 +2,8 @@
 
 An operated FDO plugin for Azure spending, evidence-backed investigation, and explicitly reviewed changes. The default **Demo** provider is fully isolated: it never invokes Azure CLI. **Live** uses only the installed `az` executable through FDO's host-approved scoped process API. It never runs a shell, signs in, reads access tokens, or makes its own network calls. Public Azure is the supported cloud. Every mutation stays behind a typed review; Databricks and Foundry cleanup cards are instructions, not actions.
 
+The resource workspace uses a dark Azure console layout with a compact scope bar, period comparison cards, a cost-increase investigation notice, and a resizable table/inspector split. The inspector summarizes ownership and the evidence timeline; expand **Evidence, history & coverage details** for the complete source and limitations. Extra filters and columns remain available beside the resource table, and the **+** button beside saved views opens the save dialog. Resource action buttons add proposals to the review plan.
+
 ## Open the plugin
 
 Import this folder in FDO's plugin editor. Keep `source: index.ts`; the host compiles the source and its scoped CSS. The compiled artifact is `dist/index.cjs`.
