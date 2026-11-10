@@ -178,6 +178,30 @@ test("disposal stops even an already queued scheduler callback", async () => {
   assert.equal(f.time.timers.size, 0);
 });
 
+test("unload rejects queued changes and a late stock response cannot consume a saved deployment", async () => {
+  const f = fixture();
+  await f.runtime.start(); await f.runtime.deploymentOptions();
+  await f.runtime.armDeployment(input); await settle();
+  const saved = clone(f.disk.read());
+  let finish!: (value: AvailabilityServiceResult) => void;
+  f.check(() => new Promise(resolve => {finish = resolve;}));
+  const refresh = f.runtime.refresh();
+  await settle();
+  const queued = f.runtime.setPolling({seconds: 600});
+  const rejected = assert.rejects(queued, {name: "AbortError"});
+  f.runtime.dispose();
+  finish({ok: true, snapshot: {checkedAt: new Date().toISOString(), items: [{id: "type", region: "A", gpu: "GPU", flavor: "flavor", status: "available", availableCount: 1, isAvailable: true}]}});
+  assert.equal((await refresh).ok, false);
+  await rejected;
+  assert.equal(f.posts(), 0);
+  assert.equal(f.time.timers.size, 0);
+  assert.equal(f.disk.seconds(), 0);
+  assert.deepEqual(f.disk.read(), saved);
+  const next = fixture(f.disk);
+  try {await next.runtime.start(); assert.equal(next.runtime.getState().deployment?.status, "waiting");}
+  finally {next.runtime.dispose();}
+});
+
 test("SDK refresh preference uses a separate persistent key and flushes before acknowledgement", async () => {
   const data = new Map<string, unknown>();
   let flushed = 0;

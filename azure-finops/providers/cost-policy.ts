@@ -45,6 +45,8 @@ type Clock = { now: () => number; sleep: (ms: number) => Promise<void> };
 type Gate = { tail: Promise<void>; nextStart: number; blockedUntil: number };
 type Cached = { value: unknown; at: number; chars: number };
 export class CostReadCoordinator {
+  private disposed = false;
+  private readonly sleeps = new Map<ReturnType<typeof setTimeout>, (error: Error) => void>();
   private readonly clock: Clock;
   private readonly spacing: number;
   private readonly retries: number;
@@ -67,7 +69,11 @@ export class CostReadCoordinator {
   ) {
     this.clock = options.clock ?? {
       now: Date.now,
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      sleep: (ms) => new Promise((resolve, reject) => {
+        if (this.disposed) {reject(new Error("Billing reads have stopped.")); return;}
+        const timer = setTimeout(() => {this.sleeps.delete(timer); resolve();}, ms);
+        this.sleeps.set(timer, reject);
+      }),
     };
     this.spacing = options.spacingMs ?? 1000;
     this.retries = options.retries ?? 2;
@@ -79,8 +85,18 @@ export class CostReadCoordinator {
     this.pending.clear();
     this.gates.clear();
   }
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const [timer, reject] of this.sleeps) {
+      clearTimeout(timer);
+      reject(new Error("Billing reads have stopped."));
+    }
+    this.sleeps.clear();
+    this.clear();
+  }
   private check(context: ReadContext) {
-    if (context.active && !context.active())
+    if (this.disposed || (context.active && !context.active()))
       throw new Error(
         "Local billing read stopped; no additional Azure request was sent.",
       );
@@ -101,6 +117,7 @@ export class CostReadCoordinator {
     work: () => Promise<T>,
     context: ReadContext = {},
   ): Promise<T> {
+    this.check(context);
     let gate = this.gates.get(partition);
     if (!gate) {
       gate = { tail: Promise.resolve(), nextStart: 0, blockedUntil: 0 };

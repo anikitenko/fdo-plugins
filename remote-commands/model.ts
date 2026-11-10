@@ -77,7 +77,7 @@ export function serviceMessage(error: unknown, context?: 'batch' | 'terminal' | 
   }
   const messages: Record<string, string> = {
     ACCESS_DENIED: 'SSH access denied. Check this plugin’s capability grants and the profile’s command or interactive-access settings in FDO. Commands have not been automatically retried.',
-    UNAVAILABLE: 'FDO SSH service is unavailable. Check that FDO uses SDK 1.8.3 and the required SSH host adapters are configured.',
+    UNAVAILABLE: 'FDO SSH service is unavailable. Check that FDO 1.0.7+ uses SDK 1.9.0+ and the required SSH host adapters are configured.',
     CANCELLED: 'Execution cancelled. Remote termination is unconfirmed unless the host provides affirmative evidence.',
     LOCKED: 'The FDO credential vault is locked. Unlock it in FDO and try again.',
     CONNECTION_FAILED: 'SSH connection or authentication failed. Check the VM is reachable and verify the user and credentials in the host profile.',

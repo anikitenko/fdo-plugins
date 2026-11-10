@@ -1,10 +1,10 @@
 # Remote Commands
 
-An FDO plugin for reusable, per-VM shell scripts using the installed FDO SDK 1.8.3 host-managed SSH service. The layout follows the supplied reference: searchable VM list, batch editor, one console for batch output and interactive sessions, and a per-VM saved-command panel. FDO’s injected ACE shell editor is used when available; a multiline textarea remains available otherwise. SDK feedback, disclosure and progress components, Pure CSS controls, and the documented UI theme variables are reused.
+An FDO plugin for reusable, per-VM shell scripts using the installed FDO SDK 1.9.0 host-managed SSH service. The layout follows the supplied reference: searchable VM list, batch editor, one console for batch output and interactive sessions, and a per-VM saved-command panel. FDO’s injected ACE shell editor is used when available; a multiline textarea remains available otherwise. SDK feedback, disclosure and progress components, Pure CSS controls, and the documented UI theme variables are reused.
 
 ## Build and load
 
-Requires Node 22.18+ and SDK 1.8.3+ in FDO’s plugin worker, with its authenticated status and live-execution host adapters enabled. Local build/test scripts reuse the sibling `../../fdo` checkout’s actual esbuild virtual filesystem and CSS compiler. Set `FDO_SOURCE_ROOT` to use another checkout; that checkout needs its dependencies installed. These are development tools, not plugin runtime dependencies.
+Requires FDO 1.0.7+, Node 22.18+ and SDK 1.9.0+ in FDO’s plugin worker, with its authenticated status and live-execution host adapters enabled. Local build/test scripts reuse the sibling `../../fdo` checkout’s actual esbuild virtual filesystem and CSS compiler. Set `FDO_SOURCE_ROOT` to use another checkout; that checkout needs its dependencies installed. These are development tools, not plugin runtime dependencies.
 
 ```sh
 cd remote-commands

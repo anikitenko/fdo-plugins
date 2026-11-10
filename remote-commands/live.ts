@@ -1,7 +1,7 @@
 import type {SSHClient, SSHConnectionStatus, SSHExecution, SSHExecOptions, SSHExecResult} from '@anikitenko/fdo-sdk';
 import {serviceMessage} from './model.ts';
 
-type Watch = {profileId: string; active: boolean; observation: SSHConnectionStatus | null; error: string; iterator?: AsyncIterator<SSHConnectionStatus>};
+type Watch = {profileId: string; active: boolean; observation: SSHConnectionStatus | null; error: string; iterator?: AsyncIterator<SSHConnectionStatus>; stopping?: Promise<unknown>};
 type Run = {viewId: string; runId: string; profileId: string; stdout: string; stderr: string; done: boolean; handle?: SSHExecution;
   result?: Omit<SSHExecResult, 'stdout' | 'stderr'>; error?: {code?: string; error: string}; cancelRequested: boolean; cancellation?: {remoteProcessStopped: boolean | null}; cancelTask?: Promise<unknown>};
 
@@ -10,6 +10,8 @@ export function createLiveController(ssh: Pick<SSHClient, 'start' | 'watchStatus
   const views = new Map<string, {seen: number; watch?: Watch}>();
   const runs = new Map<string, Run>();
   let activeRun: Run | undefined;
+  let disposal: Promise<void> | undefined;
+  let disposed = false;
   const key = (value: unknown) => {
     if (typeof value !== 'string' || !value.trim() || value.length > 200) throw new Error('Invalid view or execution identifier.');
     return value;
@@ -19,9 +21,14 @@ export function createLiveController(ssh: Pick<SSHClient, 'start' | 'watchStatus
     return input as Record<string, unknown>;
   };
   function stop(watch?: Watch) {
-    if (!watch) return;
+    if (!watch) return Promise.resolve();
     watch.active = false;
-    try {void Promise.resolve(watch.iterator?.return?.()).catch(() => {});} catch {}
+    if (!watch.stopping) {
+      try {watch.stopping = Promise.resolve(watch.iterator?.return?.());}
+      catch (error) {watch.stopping = Promise.reject(error);}
+      void watch.stopping.catch(() => {});
+    }
+    return watch.stopping;
   }
   function cancel(run: Run) {
     run.cancelRequested = true;
@@ -39,10 +46,12 @@ export function createLiveController(ssh: Pick<SSHClient, 'start' | 'watchStatus
     }
   }
   const leaseTimer = setInterval(() => {
+    if (disposed) return;
     for (const [id, view] of views) if (Date.now() - view.seen > 30000) release(id);
   }, 1000);
   leaseTimer.unref?.();
   function view(id: string) {
+    if (disposed) throw new Error('Remote Commands has stopped.');
     let found = views.get(id);
     if (!found) {
       if (views.size >= 8) throw new Error('Too many open Remote Commands views. Close an unused view.');
@@ -71,6 +80,23 @@ export function createLiveController(ssh: Pick<SSHClient, 'start' | 'watchStatus
     return feed;
   }
   return {
+    dispose(): Promise<void> {
+      if (disposal) return disposal;
+      disposed = true;
+      clearInterval(leaseTimer);
+      const pending: Promise<unknown>[] = [];
+      // Async-generator return can wait on a pending next(). Request it now;
+      // SDK transport teardown will also release the host subscription.
+      for (const owner of views.values()) void stop(owner.watch);
+      // A released view may still own an execution awaiting its start ack.
+      if (activeRun && !activeRun.done) {
+        try {pending.push(Promise.resolve(cancel(activeRun)));}
+        catch (error) {pending.push(Promise.reject(error));}
+      }
+      views.clear(); runs.clear();
+      disposal = Promise.all(pending).then(() => {});
+      return disposal;
+    },
     run(input: {viewId?: unknown; runId?: unknown; profileId: string; options: SSHExecOptions}, check: () => Promise<void>) {
       const viewId = key(input.viewId), runId = key(input.runId);
       view(viewId);

@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const host = path.resolve(process.env.FDO_SOURCE_ROOT || path.join(root, '../../fdo'));
+const sdk = path.resolve(process.env.FDO_SDK_ROOT || path.join(host, 'node_modules/@anikitenko/fdo-sdk'));
 const require = createRequire(path.join(host, 'package.json'));
 const {build} = require('esbuild');
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'hyperstack-verify-'));
@@ -46,7 +47,7 @@ try {
         strict: true, skipLibCheck: true, jsx: 'react-jsx', noEmit: true,
         esModuleInterop: true, lib: ['ES2022', 'DOM'], types: ['node'],
         typeRoots: [path.join(host, 'node_modules/@types')],
-        paths: {'@anikitenko/fdo-sdk': [path.join(host, 'node_modules/@anikitenko/fdo-sdk/dist/@types/index.d.ts')]},
+        paths: {'@anikitenko/fdo-sdk': [path.join(sdk, 'dist/@types/index.d.ts')]},
       },
       include: [path.join(root, '**/*.ts'), path.join(root, '**/*.tsx')],
       exclude: [path.join(root, 'dist'), path.join(root, 'node_modules')],

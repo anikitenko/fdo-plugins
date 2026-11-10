@@ -1,3 +1,5 @@
+import {withRequestLifetime} from "./request-lifetime";
+
 /** Hyperstack core resource catalog. Only public selection metadata crosses the bridge. */
 export interface DeploymentCatalog {
   environments: {name: string; region: string}[];
@@ -31,20 +33,18 @@ function imageLeaves(value: unknown, region = ""): DeploymentCatalog["images"] {
 export function createDeploymentCatalogService(options: {fetch?: CatalogFetch; timeoutMs?: number} = {}) {
   const request = options.fetch ?? ((url, init) => fetch(url, init));
   return {
-    async load(apiKey: string): Promise<CatalogResult> {
-      const controller = new AbortController();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const operation = async (): Promise<CatalogResult> => {
-        const init: RequestInit = {method: "GET", headers: {api_key: apiKey}, signal: controller.signal, redirect: "error", credentials: "omit", cache: "no-store"};
+    async load(apiKey: string, optionsForRequest: {signal?: AbortSignal} = {}): Promise<CatalogResult> {
+      const operation = async (signal: AbortSignal): Promise<CatalogResult> => {
+        const init: RequestInit = {method: "GET", headers: {api_key: apiKey}, signal, redirect: "error", credentials: "omit", cache: "no-store"};
         async function pages(resource: "environments" | "images" | "keypairs"): Promise<unknown[]> {
           const result: unknown[] = [];
           for (let page = 1; page <= 100; page++) {
-            if (controller.signal.aborted) throw new Error("Catalog expired");
+            if (signal.aborted) throw new Error("Catalog expired");
             const size = resource === "images" ? "per_page" : "page_size";
             const response = await request(`${API}/${resource}?page=${page}&${size}=100`, init);
             if (!response.ok) throw new Error("Catalog unavailable");
             const body = await response.json();
-            if (controller.signal.aborted) throw new Error("Catalog expired");
+            if (signal.aborted) throw new Error("Catalog expired");
             if (!record(body) || body.status !== true) throw new Error("Invalid catalog");
             const entries = resource === "images" ? body.images ?? body.data : body[resource];
             if (!Array.isArray(entries)) throw new Error("Invalid catalog");
@@ -71,11 +71,8 @@ export function createDeploymentCatalogService(options: {fetch?: CatalogFetch; t
       };
       const failed: CatalogResult = {ok: false, message: "Could not load VM options. Check API permissions for environments, images and keypairs, then reload options."};
       try {
-        return await Promise.race([operation(), new Promise<CatalogResult>(resolve => {
-          timer = setTimeout(() => {controller.abort(); resolve(failed);}, options.timeoutMs ?? 15000);
-        })]);
-      } catch { controller.abort(); return failed; }
-      finally { if (timer !== undefined) clearTimeout(timer); }
+        return await withRequestLifetime(optionsForRequest.signal, options.timeoutMs ?? 15000, operation);
+      } catch { return failed; }
     },
   };
 }

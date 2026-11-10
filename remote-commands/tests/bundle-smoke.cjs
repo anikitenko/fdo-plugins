@@ -51,13 +51,13 @@ function configure() {
     assert.equal(response.ok, true);
     assert.equal(executions, 0);
     // Tear down the actual SDK scope and create a new plugin over the disk store.
-    PluginRegistry.clearPlugin(); configure(); PluginRegistry.registerPlugin(new Plugin()); PluginRegistry.callInit();
+    await PluginRegistry.clearPlugin(); configure(); PluginRegistry.registerPlugin(new Plugin()); PluginRegistry.callInit();
     response = await PluginRegistry.callHandler('remote-commands.bootstrap', {});
     assert.equal(response.data.states.fixture.selectedBatch, 'logs');
     assert.equal(response.data.states.fixture.batches[0].draft, state.batches[0].draft);
     const review = await PluginRegistry.callHandler('remote-commands.prepare', {profileId: 'fixture', script: 'uptime', values: {}, timeout: 10, stopOnError: true});
     assert.equal(executions, 0); assert.equal(review.data.command, 'set -e; uptime');
-    assert.ok(new Plugin().declareCapabilities().includes('ssh.status.watch'));
+    assert.ok(Plugin.prototype.declareCapabilities().includes('ssh.status.watch'));
     const started = await PluginRegistry.callHandler('remote-commands.start', {token: review.data.token, viewId: 'bundle-view', runId: 'bundle-run'});
     assert.equal(started.data.started, true);
     let snapshot;
@@ -67,8 +67,8 @@ function configure() {
       await new Promise(resolve => setTimeout(resolve, 5));
     }
     assert.equal(snapshot.data.output.result.exitCode, 0); assert.equal(snapshot.data.output.stdout, 'fixture output'); assert.equal(executions, 1);
-    assert.ok(new Plugin().declareCapabilities().includes('ssh.terminal.open'));
-    assert.ok(new Plugin().declareCapabilities().includes('ssh.x11.forward'));
+    assert.ok(Plugin.prototype.declareCapabilities().includes('ssh.terminal.open'));
+    assert.ok(Plugin.prototype.declareCapabilities().includes('ssh.x11.forward'));
     const terminal = await PluginRegistry.callHandler('remote-commands.terminalOpen', {viewId: 'bundle-terminal', profileId: 'fixture', mode: 'untrusted', rows: 24, columns: 80});
     assert.equal(terminal.ok, true);
     const terminalRequest = {viewId: 'bundle-terminal', id: terminal.data.id, ack: -1};
@@ -131,5 +131,5 @@ function configure() {
       assert.equal(hiddenRule.style.getPropertyPriority('display'), 'important');
     } finally {dom.window.close();}
     console.log('Bundle smoke passed: deployed computed styles, registration, handlers, real SDK JSON disk persistence across reload, and mocked host SSH transport.');
-  } finally {PluginRegistry.clearPlugin();}
+  } finally {await PluginRegistry.clearPlugin();}
 })().catch(error => {console.error(error); process.exitCode = 1;});

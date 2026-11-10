@@ -1,4 +1,5 @@
 import type {AvailabilityItem, AvailabilitySnapshot} from "./logic";
+import {withRequestLifetime} from "./request-lifetime";
 
 export interface DeploymentPlan {
   readonly itemId: string;
@@ -32,7 +33,7 @@ export type DeploymentResult = {
 };
 
 export interface DeploymentService {
-  create(apiKey: string, plan: DeploymentPlan, item: AvailabilityItem): Promise<DeploymentResult>;
+  create(apiKey: string, plan: DeploymentPlan, item: AvailabilityItem, options?: {signal?: AbortSignal}): Promise<DeploymentResult>;
 }
 
 type DeploymentFetch = (url: string, init: RequestInit) => Promise<{
@@ -80,26 +81,16 @@ export function createDeploymentService(options: {fetch?: DeploymentFetch; timeo
   const timeoutMs = options.timeoutMs ?? 15_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) throw new Error("Invalid deployment deadline");
   return {
-    async create(apiKey, plan, item) {
-      const controller = new AbortController();
+    async create(apiKey, plan, item, requestOptions = {}) {
       let dispatched = false;
-      let expired = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
       const uncertain = (): DeploymentResult => ({
         status: "uncertain",
         message: "Creation outcome is unknown. Check Hyperstack for this VM before arming another request. Creation will not be retried automatically.",
       });
-      const deadline = new Promise<DeploymentResult>(resolve => {
-        timer = setTimeout(() => {
-          expired = true;
-          controller.abort();
-          resolve(dispatched ? uncertain() : {status: "failed", message: "Environment verification timed out. No VM creation request was sent."});
-        }, timeoutMs);
-      });
-      const operation = async (): Promise<DeploymentResult> => {
+      const operation = async (signal: AbortSignal): Promise<DeploymentResult> => {
         const init = {
           headers: {api_key: apiKey, "Content-Type": "application/json"},
-          signal: controller.signal,
+          signal,
           redirect: "error" as const,
           credentials: "omit" as const,
           cache: "no-store" as const,
@@ -110,7 +101,7 @@ export function createDeploymentService(options: {fetch?: DeploymentFetch; timeo
           const response = await request(`${API}/environments`, {...init, method: "GET"});
           if (!response.ok) return {status: "failed", message: "Could not verify the environment. Check account permissions and the environment name. No VM creation request was sent."};
           const data = await response.json();
-          if (expired) return {status: "failed", message: "Environment verification expired. No VM creation request was sent."};
+          if (signal.aborted) return {status: "failed", message: "Environment verification stopped. No VM creation request was sent."};
           if (!record(data) || data.status !== true || !Array.isArray(data.environments)) {
             return {status: "failed", message: "Hyperstack returned an unsupported environment response. No VM creation request was sent."};
           }
@@ -118,7 +109,7 @@ export function createDeploymentService(options: {fetch?: DeploymentFetch; timeo
           if (!record(environment) || environment.region !== item.region) {
             return {status: "failed", message: "Choose an existing environment in the selected flavor's region. No VM creation request was sent."};
           }
-          if (expired) return {status: "failed", message: "Environment verification expired. No VM creation request was sent."};
+          if (signal.aborted) return {status: "failed", message: "Environment verification stopped. No VM creation request was sent."};
           dispatched = true;
           const created = await request(`${API}/virtual-machines`, {
             ...init,
@@ -150,9 +141,9 @@ export function createDeploymentService(options: {fetch?: DeploymentFetch; timeo
         }
       };
       try {
-        return await Promise.race([operation(), deadline]);
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
+        return await withRequestLifetime(requestOptions.signal, timeoutMs, operation);
+      } catch {
+        return dispatched ? uncertain() : {status: "failed", message: "Environment verification stopped or timed out. No VM creation request was sent."};
       }
     },
   };
@@ -214,7 +205,8 @@ export function createDeploymentController(service: DeploymentService) {
       }
       return this.state();
     },
-    async onSnapshot(apiKey: string, snapshot: AvailabilitySnapshot, launchId: unknown, checkpoint?: () => Promise<void>): Promise<DeploymentState> {
+    async onSnapshot(apiKey: string, snapshot: AvailabilitySnapshot, launchId: unknown, checkpoint?: () => Promise<void>, signal?: AbortSignal): Promise<DeploymentState> {
+      if (signal?.aborted) return this.state();
       lastCheckedAt = snapshot.checkedAt;
       if (!plan || state.status !== "waiting" || launchId !== state.launchId) return this.state();
       const item = snapshot.items.find(entry => entry.id === plan!.itemId);
@@ -230,7 +222,8 @@ export function createDeploymentController(service: DeploymentService) {
         return this.state();
       }
       try {
-        state = {...await service.create(apiKey, selected, item)};
+        if (signal?.aborted) return this.state();
+        state = {...await service.create(apiKey, selected, item, {signal})};
       } catch {
         state = {status: "uncertain", message: "Creation outcome is unknown. Check Hyperstack before arming another request."};
       }

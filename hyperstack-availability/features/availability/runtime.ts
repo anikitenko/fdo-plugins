@@ -30,7 +30,8 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
   preferences: RefreshPreferences;
   clock?: RuntimeClock;
 }) {
-  const backend = createAvailabilityBackend(options);
+  const controller = new AbortController();
+  const backend = createAvailabilityBackend({...options, signal: controller.signal});
   const clock: RuntimeClock = options.clock ?? {
     setTimeout: (callback, ms) => { const timer = setTimeout(callback, ms); timer.unref?.(); return timer; },
     clearTimeout: timer => clearTimeout(timer as ReturnType<typeof setTimeout>),
@@ -53,7 +54,10 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
   let catalogPromise: Promise<CatalogResult> | undefined;
   let queue: Promise<void> = Promise.resolve();
   function exclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = queue.then(operation);
+    const result = queue.then(() => {
+      controller.signal.throwIfAborted();
+      return operation();
+    });
     queue = result.then(() => undefined, () => undefined);
     return result;
   }
@@ -68,7 +72,7 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
     stopTimer();
     const seconds = deployment?.status === "waiting" ? 60 : pollingSeconds;
     if (!running || disposed || seconds === 0) return;
-    timer = clock.setTimeout(() => {timer = undefined; if (!disposed && running) void refresh();}, seconds * 1000);
+    timer = clock.setTimeout(() => {timer = undefined; if (!disposed && running) void refresh().catch(() => {});}, seconds * 1000);
   };
   function refresh(): Promise<AvailabilityRefreshResult> {
     if (refreshPromise) return refreshPromise;
@@ -103,12 +107,23 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
     }).then(async () => {
       if (!disposed && configuration.ready) await refresh();
       else schedule();
+    }).catch(error => {
+      if (!disposed) throw error;
     });
     return startPromise;
   };
+  function dispose() {
+    disposed = true;
+    running = false;
+    stopTimer();
+    controller.abort();
+    options.signal?.removeEventListener("abort", dispose);
+  }
+  options.signal?.addEventListener("abort", dispose, {once: true});
+  if (options.signal?.aborted) dispose();
   return {
     start,
-    dispose() {disposed = true; running = false; stopTimer();},
+    dispose,
     getState: state,
     getConfiguration: async () => state(),
     refresh,
@@ -147,7 +162,7 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
         if (result.ok) {snapshot = null; catalog = undefined; error = null;}
         return result;
       });
-      if (result.ok && result.configuration.ready && !disposed) void refresh();
+      if (result.ok && result.configuration.ready && !disposed) void refresh().catch(() => {});
       return result;
     },
     async removeConnection() {
@@ -165,7 +180,7 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
         remember(result);
         return result;
       });
-      if (result.deployment?.status === "waiting" && !disposed) void refresh();
+      if (result.deployment?.status === "waiting" && !disposed) void refresh().catch(() => {});
       else schedule();
       return result;
     },

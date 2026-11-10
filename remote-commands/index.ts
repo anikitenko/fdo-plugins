@@ -4,12 +4,24 @@ import {serviceMessage} from './model.ts';
 import {renderRemoteCommands, renderRemoteCommandsOnLoad} from './render.ts';
 
 export default class RemoteCommandsPlugin extends FDO_SDK {
+  private backend?: ReturnType<typeof createBackend>;
+  private unregisterBackend?: () => void;
   get metadata() {
     return {id: 'remote-commands', name: 'Remote Commands', version: '1.0.0', author: 'AleXvWaN', description: 'Reusable per-VM command batches using FDO SSH profiles.', icon: 'console'};
   }
   declareCapabilities() {return [...createSSHCapabilityBundle({monitorStatus: true, terminal: true, x11: true}), 'storage', 'storage.json', 'system.clipboard.write'];}
   init(): void {
+    if (this.backend) {
+      const unregister = this.unregisterBackend;
+      // Keep an earlier backend registered until its async cleanup finishes.
+      void this.backend.dispose().then(() => unregister?.(), error => {
+        unregister?.();
+        this.error(error instanceof Error ? error : new Error(String(error)));
+      });
+    }
     const backend = createBackend(this.ssh, () => PluginRegistry.useStore('json'));
+    this.backend = backend;
+    this.unregisterBackend = this.onDispose(() => backend.dispose());
     for (const name of ['bootstrap', 'save', 'prepare', 'start', 'sync', 'cancel', 'release', 'terminalOpen', 'terminalStart', 'terminalPoll', 'terminalInput', 'terminalResize', 'terminalCancel', 'terminalClose', 'terminalRelease'] as const) {
       PluginRegistry.registerHandler(`remote-commands.${name}`, async (data: unknown) => {
         try {return {ok: true, data: await (name === 'cancel' ? backend.requestCancel(data) : backend[name](data))};}

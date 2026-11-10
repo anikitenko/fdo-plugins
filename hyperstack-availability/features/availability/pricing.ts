@@ -1,5 +1,6 @@
 import type {AvailabilityService} from "./service";
 import type {AvailabilityItem} from "./logic";
+import {withRequestLifetime} from "./request-lifetime";
 
 /** Stock configuration keys are GPU allocations (1x, 2x, 4x, 8x, 10x),
  * independent of the number of available VMs reported as their values. */
@@ -26,13 +27,12 @@ export function withHyperstackPricing(service: AvailabilityService, options: {fe
   const now = options.now ?? Date.now;
   let cached: {key: string; expires: number; rates: Map<string, Rate> | null} | undefined;
   let pending: {key: string; promise: Promise<Map<string, Rate> | null>} | undefined;
-  const load = (key: string): Promise<Map<string, Rate> | null> => {
+  const load = (key: string, signal?: AbortSignal): Promise<Map<string, Rate> | null> => {
+    if (signal?.aborted) return Promise.resolve(null);
     if (cached?.key === key && cached.expires > now()) return Promise.resolve(cached.rates);
     if (pending?.key === key) return pending.promise;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const operation = async () => {
-      const response = await request(ENDPOINT, {method: "GET", headers: {api_key: key, Accept: "application/json"}, signal: controller.signal, redirect: "error", credentials: "omit", cache: "no-store"});
+    const operation = async (signal: AbortSignal) => {
+      const response = await request(ENDPOINT, {method: "GET", headers: {api_key: key, Accept: "application/json"}, signal, redirect: "error", credentials: "omit", cache: "no-store"});
       if (!response.ok) throw new Error("Pricebook unavailable");
       const body = await response.json();
       if (!Array.isArray(body)) throw new Error("Invalid pricebook");
@@ -51,13 +51,10 @@ export function withHyperstackPricing(service: AvailabilityService, options: {fe
       }
       return rates;
     };
-    const promise = Promise.race([operation(), new Promise<null>(resolve => {
-      timer = setTimeout(() => {controller.abort(); resolve(null);}, options.timeoutMs ?? 5000);
-    })]).catch(() => null).then(rates => {
-      cached = {key, rates, expires: now() + (rates ? 300_000 : 15_000)};
+    const promise = withRequestLifetime(signal, options.timeoutMs ?? 5000, operation).catch(() => null).then(rates => {
+      if (!signal?.aborted) cached = {key, rates, expires: now() + (rates ? 300_000 : 15_000)};
       return rates;
     }).finally(() => {
-      if (timer !== undefined) clearTimeout(timer);
       if (pending?.promise === promise) pending = undefined;
     });
     pending = {key, promise};
@@ -65,7 +62,7 @@ export function withHyperstackPricing(service: AvailabilityService, options: {fe
   };
   return {
     async check(key, checkOptions) {
-      const [result, rates] = await Promise.all([service.check(key, checkOptions), load(key)]);
+      const [result, rates] = await Promise.all([service.check(key, checkOptions), load(key, checkOptions?.signal)]);
       if (!result.ok) return result;
       const items = result.snapshot.items.map((item): AvailabilityItem => {
         const gpu = item.gpu.trim().toLowerCase();

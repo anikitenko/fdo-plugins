@@ -6,6 +6,8 @@ import {
 import { createBackend } from "./backend.ts";
 import { render, onLoad } from "./render.ts";
 export default class AzureFinOpsPlugin extends FDO_SDK {
+  private backend?: ReturnType<typeof createBackend>;
+  private unregisterBackend?: () => void;
   get metadata() {
     return {
       id: "azure-finops",
@@ -25,7 +27,11 @@ export default class AzureFinOpsPlugin extends FDO_SDK {
     ];
   }
   init() {
+    this.backend?.dispose();
+    this.unregisterBackend?.();
     const backend = createBackend(() => PluginRegistry.useStore("json"));
+    this.backend = backend;
+    this.unregisterBackend = this.onDispose(() => backend.dispose());
     for (const name of [
       "bootstrap",
       "configure",

@@ -16,14 +16,15 @@ process.parentPort.postMessage = () => {};
   const sdk = require(path.join(root, "node_modules/@anikitenko/fdo-sdk"));
   try {
     const Plugin = require(path.join(root, "dist/index.cjs")).default;
+    await sdk.PluginRegistry.clearPlugin();
+    const plugin = new Plugin();
     sdk.PluginRegistry.configureCapabilities({
-      granted: new Plugin().declareCapabilities(),
+      granted: plugin.declareCapabilities(),
     });
     sdk.PluginRegistry.configureStorage({
       rootDir: path.join(temp, "storage"),
     });
     sdk.PluginRegistry.callInit();
-    const plugin = new Plugin();
     const render = plugin.render(),
       onLoad = plugin.renderOnLoad();
     const { build } = require(path.join(root, "node_modules/esbuild"));
@@ -334,7 +335,7 @@ process.parentPort.postMessage = () => {};
     );
   } finally {
     await browser?.close();
-    sdk.PluginRegistry.clearPlugin();
+    await sdk.PluginRegistry.clearPlugin();
     fs.rmSync(temp, { recursive: true, force: true });
   }
 })().catch((error) => {

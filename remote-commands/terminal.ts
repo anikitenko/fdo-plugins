@@ -9,6 +9,8 @@ type Entry = {id: string; viewId: string; profileId: string; mode: 'off' | 'trus
 /** One held packet per view: only renderer consumption allows another SDK read. No transcript. */
 export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, authorize: (id: string) => Promise<unknown>) {
   const entries = new Map<string, Entry>();
+  let disposal: Promise<void> | undefined;
+  let disposed = false;
   // Diagnostic evidence only: no retries, policy changes or persistent profile data.
   const terminalOnly = new Map<string, {signature: string; expires: number}>();
   const signature = (profileId: string, profile: unknown) => JSON.stringify([profileId,
@@ -25,10 +27,12 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
     const code = (error as {code?: string})?.code ?? 'UNAVAILABLE';
     entry.error = {code, message: serviceMessage({code}, 'terminal', {terminalOnlyVerified: !!entry.terminalOnlyVerified && !entry.session && entry.mode !== 'off'}) + (code === 'ACCESS_DENIED' ? ` Requested X11 mode: ${entry.mode}. ${entry.mode === 'off' ? 'X11 authorization is not used by this request.' : 'Trusted and untrusted mode consents are distinct; an X11 capability grant alone does not authorize this VM/mode.'}` : code === 'X11_FORWARDING_DENIED' ? ` Requested X11 mode: ${entry.mode}.` : '')};
   };
-  function release(entry: Entry) {
+  function release(entry: Entry): Promise<unknown> {
     entry.released = true; if (!entry.session) entry.controller.abort(); entry.packet = undefined; entry.acknowledge?.(); entry.acknowledge = undefined;
-    void entry.session?.close().catch(() => {});
+    const closing = Promise.resolve().then(() => entry.session?.close());
+    void closing.catch(() => {});
     if (entries.get(entry.viewId) === entry) entries.delete(entry.viewId);
+    return closing;
   }
   function current(input: unknown) {
     const value = data(input), entry = entries.get(key(value.viewId));
@@ -43,12 +47,22 @@ export function createTerminalController(ssh: Pick<SSHClient, 'openTerminal'>, a
     }
   }
   const timer = setInterval(() => {
+    if (disposed) return;
     for (const [viewId, evidence] of terminalOnly) if (evidence.expires < Date.now()) terminalOnly.delete(viewId);
     for (const entry of entries.values()) if (Date.now() - entry.touched > 30000) release(entry);
   }, 1000);
   timer.unref?.();
   return {
+    dispose(): Promise<void> {
+      if (disposal) return disposal;
+      disposed = true;
+      clearInterval(timer);
+      disposal = Promise.all([...entries.values()].map(release)).then(() => {});
+      terminalOnly.clear();
+      return disposal;
+    },
     terminalOpen(input: unknown, launch?: string, completionId?: string) {
+      if (disposed) throw new Error('Remote Commands has stopped.');
       const value = data(input), viewId = key(value.viewId), profileId = key(value.profileId);
       const mode = value.mode;
       if (!['off', 'trusted', 'untrusted'].includes(mode as string)) throw new Error('Choose an X11 mode.');

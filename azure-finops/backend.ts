@@ -56,6 +56,10 @@ export const defaultSettings = (): Settings => ({
   demoOverrides: {},
 });
 export function createBackend(getStore: () => StoreWithLifecycle) {
+  let disposed = false;
+  function assertActive() {
+    if (disposed) throw new Error("Azure FinOps has stopped.");
+  }
   let settings = defaultSettings(),
     loaded = false,
     persistTail = Promise.resolve();
@@ -103,6 +107,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
   }
 
   function load() {
+    assertActive();
     if (loaded) return;
     const raw = getStore().get("settings") as Settings | undefined;
     if (raw) {
@@ -141,6 +146,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
   ) {
     const snapshot = structuredClone(value);
     const next = persistTail.then(async () => {
+      assertActive();
       if (!ownsView()) return false;
       const encoded =
         key === "exploration" ? JSON.stringify(snapshot) : undefined;
@@ -166,6 +172,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
     return input.mode;
   };
   function current(id: string) {
+    assertActive();
     const job = jobs.get(id);
     if (!job)
       throw new Error(
@@ -237,7 +244,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       scope = settings.processScope;
     return (args, reason, mutating = false) =>
       new Promise((resolve, reject) => {
-        if (job.state !== "running") {
+        if (disposed || job.state !== "running") {
           reject(
             new Error(
               "Local request was stopped. Azure operations were not cancelled.",
@@ -286,7 +293,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
       ? new DemoProvider(settings)
       : new LiveProvider(cli(job), billing, {
           namespace: JSON.stringify([settings.cli, settings.processScope]),
-          active: () => job.state === "running",
+          active: () => !disposed && job.state === "running",
           progress: (message) => {
             job.progress = message;
           },
@@ -295,6 +302,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
     mode: Mode,
     work: (p: Provider, job: Job) => Promise<unknown>,
   ) {
+    assertActive();
     if (jobs.size >= 12)
       throw new Error(
         "Too many active requests. Stop polling an unused request first.",
@@ -399,6 +407,7 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
     return action;
   }
   const timer = setInterval(() => {
+    if (disposed) return;
     for (const [id, j] of jobs)
       if (Date.now() - j.touched > 240000) {
         if (j.pending) {
@@ -430,12 +439,35 @@ export function createBackend(getStore: () => StoreWithLifecycle) {
     return undefined;
   }
   return {
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearInterval(timer);
+      for (const job of jobs.values()) {
+        job.state = "error";
+        job.error = "Plugin stopped. Inspect Azure for any operation already dispatched.";
+        if (job.pending) {
+          clearTimeout(job.pending.deadline);
+          const pending = job.pending;
+          job.pending = undefined;
+          pending.reject(Object.assign(new Error(job.error), {uncertain: true}));
+        }
+      }
+      jobs.clear();
+      reviews.clear();
+      viewCache.clear();
+      cachedAccounts = undefined;
+      billing.dispose();
+      // The SDK gates storage before cleanup. Existing durable running markers
+      // become unknown on restart; shutdown must not write a false completion.
+    },
     async bootstrap() {
       load();
       const viewId = crypto.randomUUID();
       explorationViewId = viewId;
       // Drain writes from the previous view before taking the restoration snapshot.
       await persistTail;
+      assertActive();
       const exploration = readExploration();
       return {
         settings,

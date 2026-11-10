@@ -5,6 +5,30 @@ import {createTerminalController} from '../terminal.ts';
 import {channel, deferred} from './fixtures.ts';
 
 const tick = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();};
+
+test('terminal disposal closes active sessions and releases an output packet awaiting acknowledgement', async () => {
+  const f = fixture();
+  f.open(); await tick();
+  f.output.push({sequence: 0, data: new Uint8Array([65])}); await tick();
+  const done = f.controller.dispose();
+  assert.equal(f.controller.dispose(), done);
+  await done; await tick();
+  assert.ok(f.closes() > 0);
+  assert.throws(() => f.open(), /stopped/);
+});
+
+test('terminal disposal aborts pending opens and closes a late session before launching commands', async () => {
+  const f = fixture(), gate = deferred<SSHTerminalSession>();
+  let openingSignal: AbortSignal | undefined;
+  f.ssh.openTerminal = async (_options, signal) => {openingSignal = signal; return gate.promise;};
+  f.controller.terminalOpen({viewId: 'view', profileId: 'vm', mode: 'off', rows: 24, columns: 80}, 'do-not-run');
+  await tick();
+  await f.controller.dispose();
+  assert.equal(openingSignal?.aborted, true);
+  gate.resolve(f.session); await tick();
+  assert.ok(f.closes() > 0);
+  assert.deepEqual(f.writes, []);
+});
 function fixture() {
   const output = channel<SSHTerminalOutput>(), terminal = deferred<SSHTerminalResult>(), cancellation = deferred<{remoteProcessStopped: boolean | null}>();
   const writes: string[] = [], resizes: number[][] = [], opens: SSHTerminalOptions[] = [];

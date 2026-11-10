@@ -92,6 +92,7 @@ export type AvailabilityRefreshResult =
   | AvailabilityBackendFailure;
 
 export interface AvailabilityBackendOptions {
+  readonly signal?: AbortSignal;
   /** Pass the plugin instance's this.secrets from init(). */
   readonly secrets: AvailabilitySecretStore;
   /** Construct the service in backend code, never from iframe options. */
@@ -360,6 +361,7 @@ export function createAvailabilityBackend(
   }
 
   async function persistMonitoring(): Promise<void> {
+    options.signal?.throwIfAborted();
     if (!options.monitoring || !deployment) return;
     try {
       if (!monitoringLoaded || monitoringError) throw new Error("Monitoring storage unavailable");
@@ -368,7 +370,10 @@ export function createAvailabilityBackend(
   }
 
   function exclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = queue.then(operation);
+    const result = queue.then(() => {
+      options.signal?.throwIfAborted();
+      return operation();
+    });
     queue = result.then(
       () => undefined,
       () => undefined,
@@ -397,7 +402,7 @@ export function createAvailabilityBackend(
           const apiKey = await secrets.get(AVAILABILITY_SECRET_KEY);
           if (!validCredential(apiKey) || !options.catalogService) return {ok: false as const, message: "Save an API key to load VM options."};
           catalog = null;
-          const result = await options.catalogService.load(apiKey);
+          const result = await options.catalogService.load(apiKey, {signal: options.signal});
           if (result.ok) catalog = result.catalog;
           return result;
         } catch { return {ok: false as const, message: "Could not access credentials to load VM options."}; }
@@ -435,6 +440,7 @@ export function createAvailabilityBackend(
         }
 
         try {
+          options.signal?.throwIfAborted();
           await secrets.set(AVAILABILITY_SECRET_KEY, apiKey);
         } catch (error: unknown) {
           return storageFailure(error);
@@ -455,6 +461,7 @@ export function createAvailabilityBackend(
         catalog = null;
         try {
           // A missing key is already the requested state.
+          options.signal?.throwIfAborted();
           await secrets.delete(AVAILABILITY_SECRET_KEY);
           return {
             ok: true,
@@ -526,7 +533,9 @@ export function createAvailabilityBackend(
 
         const current = configuration("ready");
         try {
-          const result = await service.check(apiKey);
+          const result = await service.check(apiKey, {signal: options.signal});
+          // A late response must never launch a VM after the plugin was unloaded.
+          if (options.signal?.aborted) return failure(current, "cancelled", "Backend monitoring has stopped.", false);
           if (!result.ok) {
             return serviceFailure(current, result.error);
           }
@@ -534,7 +543,7 @@ export function createAvailabilityBackend(
           latestSnapshot = result.snapshot;
           const launchId = typeof content === "object" && content !== null && "launchId" in content ? content.launchId : undefined;
           const deploymentState = deployment && monitoringReady
-            ? await deployment.onSnapshot(apiKey, result.snapshot, launchId, persistMonitoring)
+            ? await deployment.onSnapshot(apiKey, result.snapshot, launchId, persistMonitoring, options.signal)
             : monitoringView()?.state;
           if (monitoringReady) {
             try { await persistMonitoring(); } catch { /* Creating marker remains durable; never retry the POST. */ }

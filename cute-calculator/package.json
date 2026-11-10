@@ -13,7 +13,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@anikitenko/fdo-sdk": "*"
+    "@anikitenko/fdo-sdk": "^1.9.0"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",
@@ -24,8 +24,8 @@
   },
   "fdo": {
     "compatibility": {
-      "fdo": ">=1.0.3 <2.0.0",
-      "sdk": ">=1.8.3 <2.0.0",
+      "fdo": ">=1.0.7 <2.0.0",
+      "sdk": ">=1.9.0 <2.0.0",
       "api": "^1.0.0",
       "features": []
     }

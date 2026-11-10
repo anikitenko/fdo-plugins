@@ -6,8 +6,12 @@ import {createTerminalController} from './terminal.ts';
 import {terminalLaunch} from './terminal-launch.ts';
 
 export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'watchStatus'> & Partial<Pick<SSHClient, 'openTerminal'>>, getStore: () => StoreWithLifecycle) {
+  let disposal: Promise<void> | undefined;
+  let disposed = false;
+  const assertActive = () => {if (disposed) throw new Error('Remote Commands has stopped.');};
   const reviews = new Map<string, {profileId: string; profile: SSHProfileSummary; command: string; timeoutMs: number; maxOutputBytes: number; executionMode: 'batch' | 'terminal'; x11Mode: 'off' | 'trusted' | 'untrusted'; expires: number}>();
   const record = (v: unknown): Record<string, any> => {
+    assertActive();
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('Provide an action payload.');
     return v as Record<string, any>;
   };
@@ -16,7 +20,9 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
     return v;
   };
   const authorize = async (profileId: string) => {
+    assertActive();
     const profile = (await ssh.listProfiles()).find(p => p.id === profileId);
+    assertActive();
     if (!profile) throw new Error('This VM profile is no longer authorized. Refresh the VM list and check FDO settings.');
     return publicProfile(profile);
   };
@@ -43,6 +49,14 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
 
   return {
     ...terminal,
+    dispose(): Promise<void> {
+      if (!disposal) {
+        disposed = true;
+        reviews.clear();
+        disposal = Promise.all([live.dispose(), terminal.dispose()]).then(() => {});
+      }
+      return disposal;
+    },
     terminalStart(input: unknown) {
       const data = record(input), review = reviews.get(data.token);
       if (!review || review.expires < Date.now() || review.executionMode !== 'terminal') throw new Error('Review this batch for interactive execution before running.');
@@ -60,9 +74,11 @@ export function createBackend(ssh: Pick<SSHClient, 'listProfiles' | 'start' | 'w
     requestCancel: live.requestCancel,
     sync: live.sync, cancel: live.cancel, release: live.release,
     async bootstrap(_input?: unknown) {
+      assertActive();
       let profiles: Awaited<ReturnType<SSHClient['listProfiles']>> = [];
       const warnings: string[] = [];
       try {profiles = (await ssh.listProfiles()).map(publicProfile);} catch (e) {warnings.push(serviceMessage(e));}
+      assertActive();
       const states: Record<string, ReturnType<typeof initialState>> = Object.create(null);
       let store: StoreWithLifecycle | undefined;
       try {store = getStore();} catch {warnings.push('Persistent storage is unavailable. FDO must grant storage and storage.json and configure a storage root. Edits cannot survive reload until this is fixed.');}

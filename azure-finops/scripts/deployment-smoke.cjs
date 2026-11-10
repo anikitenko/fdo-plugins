@@ -8,8 +8,9 @@ const sdk = require("@anikitenko/fdo-sdk"),
   { PluginRegistry } = sdk;
 (async () => {
   try {
-    const Plugin = require(process.argv[2]).default,
-      plugin = new Plugin();
+    const Plugin = require(process.argv[2]).default;
+    await PluginRegistry.clearPlugin();
+    const plugin = new Plugin();
     const configure = () => {
       PluginRegistry.configureCapabilities({
         granted: plugin.declareCapabilities(),
@@ -75,7 +76,7 @@ const sdk = require("@anikitenko/fdo-sdk"),
       processScope: "azure-finops",
     });
     assert.equal(response.ok, true);
-    PluginRegistry.clearPlugin();
+    await PluginRegistry.clearPlugin();
     configure();
     PluginRegistry.registerPlugin(new Plugin());
     PluginRegistry.callInit();
@@ -85,7 +86,7 @@ const sdk = require("@anikitenko/fdo-sdk"),
       "Deployment smoke passed: compiled storage/storage.json manifest, missing JSON-grant rejection, real host startup/render-source guard, SDK transport and durable settings across reload.",
     );
   } finally {
-    PluginRegistry.clearPlugin();
+    await PluginRegistry.clearPlugin();
   }
 })().catch((error) => {
   console.error(error);

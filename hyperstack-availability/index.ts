@@ -229,6 +229,7 @@ const HYPERSTACK_PROVIDER: HyperstackProviderContract = {
 
 export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   private availabilityRuntime?: ReturnType<typeof createAvailabilityRuntime>;
+  private unregisterRuntime?: () => void;
   private readonly pluginMetadata: PluginMetadata = {
     name: "Hyperstack availability",
     version: "1.3.2",
@@ -254,12 +255,14 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
 
   init(): void {
     this.availabilityRuntime?.dispose();
+    this.unregisterRuntime?.();
     const service = withHyperstackPricing(createAvailabilityService({
       provider: HYPERSTACK_PROVIDER,
       timeoutMs: 15_000,
     }));
 
     const backend = createAvailabilityRuntime({
+      signal: this.signal,
       preferences: createRefreshPreferences(() => PluginRegistry.useStore("json")),
       secrets: this.secrets,
       service,
@@ -269,7 +272,10 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
     });
 
     this.availabilityRuntime = backend;
-    void backend.start();
+    this.unregisterRuntime = this.onDispose(() => backend.dispose());
+    void backend.start().catch(error => {
+      if (!this.signal.aborted) this.error(error instanceof Error ? error : new Error(String(error)));
+    });
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.state, () => backend.getState());
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.setPolling, (content: unknown) => backend.setPolling(content));
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.deploymentOptions, (content: unknown) => backend.deploymentOptions(content));

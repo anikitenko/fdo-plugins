@@ -8,6 +8,27 @@ import {channel, deferred} from './fixtures.ts';
 
 const tick = async () => {for (let i = 0; i < 12; i++) await Promise.resolve();};
 const result = (stdout = '', stderr = ''): SSHExecResult => ({stdout, stderr, exitCode: 0, signal: null, durationMs: 50, truncated: false});
+
+test('backend disposal stops status feeds and cancels an execution whose start acknowledgement arrives late', async () => {
+  const f = fixture(), gate = deferred<SSHExecution>(), original = f.ssh.start;
+  f.ssh.start = async options => {const handle = await original(options); await gate.promise; return handle;};
+  let returned = 0;
+  const end = f.status.iterator.return!.bind(f.status.iterator);
+  f.status.iterator.return = async () => {returned++; return end();};
+  await f.backend.sync({viewId: 'view', profileId: 'vm'}); await tick();
+  const {run} = await begin(f);
+  const failed = assert.rejects(run, {code: 'CANCELLED'});
+  const disposal = f.backend.dispose();
+  assert.equal(f.backend.dispose(), disposal);
+  await disposal;
+  assert.equal(returned, 1);
+  gate.resolve({events: f.events.iterator, result: f.terminal.promise, cancel: async () => ({remoteProcessStopped: null})});
+  await failed;
+  assert.equal(f.cancels(), 1);
+  assert.equal(f.starts.length, 1);
+  await assert.rejects(f.backend.sync({viewId: 'new'}), /stopped/);
+  await assert.rejects(f.backend.bootstrap(), /stopped/);
+});
 function fixture() {
   const events = channel<SSHOutputEvent>(), status = channel<SSHConnectionStatus>(), terminal = deferred<SSHExecResult>();
   let cancels = 0;
