@@ -1,3 +1,4 @@
+import {createRestorationCatalogService} from "./features/availability/restoration";
 import {withHyperstackPricing, stockConfigurationGpuCount} from "./features/availability/pricing";
 import {createAvailabilityRuntime} from "./features/availability/runtime";
 import {createMonitoringPersistence, createRefreshPreferences} from "./features/availability/monitoring";
@@ -232,9 +233,9 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
   private unregisterRuntime?: () => void;
   private readonly pluginMetadata: PluginMetadata = {
     name: "Hyperstack availability",
-    version: "1.3.2",
+    version: "1.5.0",
     author: "AleXvWaN",
-    description: "Check Hyperstack GPU stock and create one VM when a selected flavor becomes available.",
+    description: "Check Hyperstack GPU stock and queue hibernated VMs to restore when their configurations become available.",
     icon: "server",
   };
 
@@ -269,6 +270,7 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
       monitoring: createMonitoringPersistence(() => PluginRegistry.useStore("json")),
       deploymentService: createDeploymentService(),
       catalogService: createDeploymentCatalogService(),
+      restorationCatalogService: createRestorationCatalogService(),
     });
 
     this.availabilityRuntime = backend;
@@ -276,6 +278,9 @@ export default class HyperstackAvailabilityPlugin extends FDO_SDK {
     void backend.start().catch(error => {
       if (!this.signal.aborted) this.error(error instanceof Error ? error : new Error(String(error)));
     });
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.enqueueRestorations, (content: unknown) => backend.enqueueRestorations(content));
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.cancelRestorations, (content: unknown) => backend.cancelRestorations(content));
+    PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.hibernatedOptions, () => backend.hibernatedOptions());
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.state, () => backend.getState());
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.setPolling, (content: unknown) => backend.setPolling(content));
     PluginRegistry.registerHandler(AVAILABILITY_HANDLERS.deploymentOptions, (content: unknown) => backend.deploymentOptions(content));

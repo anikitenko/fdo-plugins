@@ -38,7 +38,7 @@ This workflow requires no SSH, clipboard, filesystem mutation or process executi
 
 ## Check and filter stock
 
-Choose **Check availability** to retrieve a fresh snapshot. Use **Region**, **GPU**, **Stock status** and **Search** to narrow the displayed results. Filters apply to the current snapshot.
+Choose **Check availability** to retrieve a fresh snapshot. Use **Region**, **GPU**, **Stock status** and **Search** to narrow the displayed results. Filters apply to the current snapshot. The stock-status selection (Available, Out of stock, Unknown or All) is retained in browser session storage across view reloads for the current session. If browser storage is unavailable, filtering still works without persistence.
 
 Stock states mean:
 
@@ -53,6 +53,20 @@ Stock states mean:
 **Backend automatic refresh** supports manual checks or intervals of one, five or ten minutes. The selected interval is flushed to the plugin-scoped JSON store under a separate settings key, and restored after browser reloads, FDO plugin reloads and backend restarts. New installations default to manual checks. All pages share the same backend interval; changing it updates the other pages’ dropdowns. The interval runs from the end of each check, preventing overlap.
 
 The plugin starts one backend scheduler in `init()`, independent of browser sessions. Opening or reloading a page only reads cached stock and monitoring state; it never forces a Hyperstack stock request. The UI reads the backend cache every five seconds while visible, preserves displayed results during background checks, and marks them stale if the latest check fails. Closing a page stops only those UI reads. Explicit **Check availability** and scheduled checks share an in-flight request. Environment/image/key options also share a five-minute backend cache; **Reload VM options** explicitly bypasses it.
+
+## Queue hibernated VMs for restoration
+
+1. In **Restore queue**, choose **Load hibernated VMs**.
+2. Select one or more existing GPU VMs in the list (use Command/Ctrl or Shift to select multiple). Each option shows its name, ID, region and current flavor.
+3. Acknowledge charges for all selected VMs, then choose **Add selected VMs to queue**. You can add more VMs while others wait.
+
+Each queue entry waits independently for its exact region, GPU and flavor. An unavailable entry never blocks a later ready entry. For VMs sharing one configuration, one restore request per configuration is allowed per fresh stock check; the remaining VMs wait for another check rather than reusing the same capacity signal. Generic allocation rows such as `1x` cannot substitute for an exact flavor.
+
+The backend checks stock immediately after adding entries, then every minute while any entries wait, even with automatic refresh set to manual or no browser page open. The entire queue and individual statuses are saved in plugin JSON storage and resume after backend restart. Select waiting entries in **Waiting VMs to cancel**, then choose **Cancel selected waiting VMs**, or use **Cancel all waiting restores**. Changing the connection also cancels waiting entries. VM creation is independent of the restore queue and has its own Cancel waiting control.
+
+Configuration is resolved from a fresh account read when adding VMs. Before each [restore request](https://docs.hyperstack.cloud/docs/api-reference/core-resources/virtual-machines/manage-vms/restore-vm/), the backend verifies that the same VM is still `HIBERNATED` with its original region and flavor. It never changes that configuration. The API key needs VM read and restore permissions (and any billing permissions required by Hyperstack).
+
+The queue displays waiting, submitted, failed, uncertain and cancelled statuses per VM. Repeated additions never duplicate waiting entries. Submitted and uncertain entries cannot be added again; check their outcome in Hyperstack. Failed or cancelled entries can be selected and explicitly added again after review. Each VM's consumed marker is flushed before its request, so interrupted requests become uncertain after restart and are never retried automatically. A rejected or uncertain VM does not stop other configurations. Stock is not reserved and can change before Hyperstack accepts a restore request. Up to 100 VMs can be added at once, with 200 entries retained in the queue.
 
 ## Create one VM when stock becomes available
 

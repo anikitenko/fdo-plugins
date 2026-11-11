@@ -1,4 +1,4 @@
-import type {DeploymentPlan} from "./deployment";
+import type {CreationPlan} from "./deployment";
 import type {DeploymentCatalog} from "./catalog";
 import {defineRenderOnLoadActions} from "@anikitenko/fdo-sdk";
 import type {AvailabilityConfiguration} from "./backend";
@@ -27,6 +27,10 @@ export function createAvailabilityActions() {
       },
     },
     bindings: [
+      {selector: "#hyperstack-restore-reload", event: "click", handler: "command"},
+      {selector: "#hyperstack-restore-arm", event: "click", handler: "command"},
+      {selector: "#hyperstack-restore-cancel-selected", event: "click", handler: "command"},
+      {selector: "#hyperstack-restore-cancel-all", event: "click", handler: "command"},
       {selector: "#hyperstack-deploy-reload", event: "click", handler: "command"},
       {selector: "#hyperstack-deploy-type", event: "change", handler: "command"},
       {selector: "#hyperstack-deploy-environment", event: "change", handler: "command"},
@@ -60,10 +64,14 @@ export function createAvailabilityActions() {
       let backendErrorVisible = false;
       let hydrated = false;
       let catalogAttempted = false;
+      let restoreWaitingCount = 0;
+      let restoreQueueUncertain = false;
+      let cancelSelectedRestores = false;
+      let restorationOptionsLoaded = false;
       let launchId: string | undefined;
       let deploymentUncertain = false;
       let catalog: DeploymentCatalog | null = null;
-      let restoredPlan: DeploymentPlan | null = null;
+      let restoredPlan: CreationPlan | null = null;
 
       // Native disclosure needs no frontend controller or event listeners.
       // Keep it outside the existing error paragraph to preserve valid markup.
@@ -77,6 +85,13 @@ export function createAvailabilityActions() {
       technicalDetails.appendChild(technicalSummary);
       technicalDetails.appendChild(technicalText);
       root.appendChild(technicalDetails);
+
+      const stockPreferenceKey = "hyperstack.stock-status.v1";
+      try {
+        const saved = window.sessionStorage.getItem(stockPreferenceKey);
+        const node = document.getElementById("hyperstack-stock-status");
+        if (saved && ["all", "available", "unavailable", "unknown"].includes(saved) && node && "value" in node) node.value = saved;
+      } catch { /* The filter still works when browser storage is unavailable. */ }
 
       const get = (name: string) =>
         document.getElementById(`hyperstack-${name}`);
@@ -126,6 +141,12 @@ export function createAvailabilityActions() {
         disable("save-connection", busy);
         disable("clear-connection", busy || !configuration?.configured);
         disable("refresh", busy || !ready);
+        disable("restore-reload", busy || !ready);
+        disable("restore-vm", busy || !ready || !restorationOptionsLoaded);
+        disable("restore-arm", busy || !ready || !snapshot || !restorationOptionsLoaded || restoreQueueUncertain);
+        disable("restore-cancel-vm", busy || restoreWaitingCount === 0);
+        disable("restore-cancel-selected", busy || restoreWaitingCount === 0);
+        disable("restore-cancel-all", busy || restoreWaitingCount === 0);
         disable("deploy-arm", busy || !ready || !snapshot || !catalog || Boolean(launchId) || deploymentUncertain);
         disable("deploy-reload", busy || !ready || Boolean(launchId));
         disable("deploy-cancel", busy || !ready);
@@ -564,7 +585,7 @@ export function createAvailabilityActions() {
       };
 
       const run = async (
-        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh" | "armDeployment" | "cancelDeployment" | "deploymentOptions" | "state" | "setPolling",
+        operation: "configuration" | "saveConnection" | "removeConnection" | "refresh" | "armDeployment" | "cancelDeployment" | "deploymentOptions" | "state" | "setPolling" | "hibernatedOptions" | "enqueueRestorations" | "cancelRestorations",
       ): Promise<void> => {
         const quiet = operation === "state";
         if (disposed || busy || (quiet && readingState)) return;
@@ -578,6 +599,30 @@ export function createAvailabilityActions() {
         };
         if (operation === "setPolling") content = {seconds: Number(value("polling"))};
         if (operation === "deploymentOptions") content = {force: catalogAttempted};
+        const selectedVmIds = (name: string): number[] => {
+          const select = get(name);
+          if (!select) return [];
+          return Array.from(select.children).filter(node => "selected" in node && node.selected === true && "value" in node && Number(node.value) > 0)
+            .map(node => Number((node as HTMLOptionElement).value));
+        };
+        if (operation === "enqueueRestorations") {
+          if (!configuration?.ready || restoreQueueUncertain) return;
+          const vmIds = selectedVmIds("restore-vm");
+          if (!vmIds.length || !checked("restore-charges")) {
+            text("restore-options-status", "Select one or more hibernated VMs and acknowledge restore charges.");
+            return;
+          }
+          content = {vmIds, confirmCharges: true};
+        }
+        if (operation === "cancelRestorations" && cancelSelectedRestores) {
+          cancelSelectedRestores = false;
+          const vmIds = selectedVmIds("restore-cancel-vm");
+          if (!vmIds.length) {
+            text("restore-options-status", "Select waiting VMs to cancel.");
+            return;
+          }
+          content = {vmIds};
+        }
         if (operation === "armDeployment") {
           if (!configuration?.ready || launchId || deploymentUncertain) return;
           const itemId = value("deploy-type");
@@ -611,6 +656,8 @@ export function createAvailabilityActions() {
         if (operation === "saveConnection" || operation === "removeConnection") {
           markStale(Boolean(snapshot));
           catalog = null;
+          restorationOptionsLoaded = false;
+          get("restore-vm")?.replaceChildren();
           catalogAttempted = false;
           renderDeploymentOptions();
           launchId = undefined;
@@ -635,6 +682,28 @@ export function createAvailabilityActions() {
           if (!isRecord(response) || typeof response.ok !== "boolean") {
             throw new Error("Invalid application response");
           }
+          if (operation === "hibernatedOptions") {
+            const node = get("restore-vm");
+            node?.replaceChildren();
+            restorationOptionsLoaded = false;
+            if (response.ok && Array.isArray(response.vms) && response.vms.every(v => isRecord(v) && Number.isSafeInteger(v.id) && Number(v.id) > 0 && [v.name, v.region, v.flavor].every(s => typeof s === "string"))) {
+              const fragment = document.createDocumentFragment();
+              const placeholder = document.createElement("option");
+              placeholder.value = "";
+              placeholder.textContent = "Choose a hibernated VM";
+              fragment.appendChild(placeholder);
+              for (const vm of response.vms) {
+                const entry = document.createElement("option");
+                entry.value = String(vm.id);
+                entry.textContent = `${vm.name} (#${vm.id}) · ${vm.region} · ${vm.flavor}`;
+                fragment.appendChild(entry);
+              }
+              node?.replaceChildren(fragment);
+              restorationOptionsLoaded = true;
+              text("restore-options-status", response.vms.length ? "Choose a VM to monitor its current configuration." : "No hibernated GPU VMs found.");
+            } else text("restore-options-status", "Could not load hibernated GPU VMs. Check VM read permissions and reload.");
+            return;
+          }
           if (operation === "deploymentOptions") {
             catalogAttempted = true;
             if (response.ok && isRecord(response.catalog)
@@ -657,12 +726,50 @@ export function createAvailabilityActions() {
           if (response.ok && (operation === "saveConnection" || operation === "removeConnection")) connectionExpanded = false;
           if (!response.ok && isRecord(response.error) && response.error.code === "authentication_failed") connectionExpanded = true;
           const monitoring = isRecord(response.monitoring) ? response.monitoring : null;
+          if (monitoring) {
+            const queue = Array.isArray(monitoring.restorations) ? monitoring.restorations : [];
+            const list = get("restore-queue");
+            const cancellation = get("restore-cancel-vm");
+            const selectedIds = selectedVmIds("restore-cancel-vm");
+            const rows = document.createDocumentFragment();
+            const choices = document.createDocumentFragment();
+            restoreWaitingCount = 0;
+            let submitted = 0;
+            for (const entry of queue) {
+              if (!isRecord(entry) || !isRecord(entry.plan) || !isRecord(entry.state) || !Number.isSafeInteger(entry.plan.restoreVmId)
+                || ![entry.plan.name, entry.plan.region, entry.plan.flavor, entry.state.status, entry.state.message].every(v => typeof v === "string")) continue;
+              const label = `${entry.plan.name} (#${entry.plan.restoreVmId}) · ${entry.plan.region} · ${entry.plan.flavor}`;
+              const row = document.createElement("li");
+              row.textContent = `${label} · ${entry.state.status}: ${entry.state.message}`;
+              rows.appendChild(row);
+              if (entry.state.status === "submitted") submitted++;
+              if (entry.state.status === "waiting") {
+                restoreWaitingCount++;
+                const option = document.createElement("option");
+                option.value = String(entry.plan.restoreVmId);
+                option.textContent = label;
+                option.selected = selectedIds.includes(Number(entry.plan.restoreVmId));
+                choices.appendChild(option);
+              }
+            }
+            list?.replaceChildren(rows);
+            cancellation?.replaceChildren(choices);
+            text("restore-queue-status", queue.length ? `${queue.length} VMs in queue · ${restoreWaitingCount} waiting · ${submitted} restore requests submitted` : "No VMs queued for restoration.");
+            restoreQueueUncertain = false;
+          }
+          if (operation === "enqueueRestorations" && response.ok) {
+            text("restore-options-status", "Selected VMs added. Each waits independently for its configuration.");
+            const acknowledgement = get("restore-charges");
+            if (acknowledgement && "checked" in acknowledgement) acknowledgement.checked = false;
+            const picker = get("restore-vm");
+            if (picker) for (const option of Array.from(picker.children)) if ("selected" in option) option.selected = false;
+          }
           if (!hydrated && monitoring) {
             hydrated = true;
             const plan = monitoring.plan;
             if (isRecord(plan) && ["itemId", "name", "environment", "image", "keypair"].every(f => typeof plan[f] === "string") && typeof plan.publicIp === "boolean"
               && (plan.userData === undefined || typeof plan.userData === "string") && (plan.sshSource === undefined || typeof plan.sshSource === "string")) {
-              restoredPlan = plan as unknown as DeploymentPlan;
+              restoredPlan = plan as unknown as CreationPlan;
             }
           }
           const deployment = monitoring && isRecord(monitoring.state) ? monitoring.state : response.deployment;
@@ -685,7 +792,13 @@ export function createAvailabilityActions() {
           if (quiet) backendRefreshing = response.refreshing === true;
           if (!response.ok) {
             const presentation = failurePresentation(response.error);
-            setError(presentation.message, presentation.details);
+            if ((operation === "enqueueRestorations" || operation === "cancelRestorations") && isRecord(response.error) && response.error.code === "invalid_input") {
+              const message = operation === "enqueueRestorations"
+                ? "Reload hibernated VMs and availability, select matching VMs and acknowledge charges. Submitted or uncertain entries cannot be added again."
+                : "Select waiting VMs to cancel.";
+              text("restore-options-status", message);
+              setError(message);
+            } else setError(presentation.message, presentation.details);
             if (operation === "refresh" && snapshot) markStale(true);
           } else if (operation === "refresh" || quiet || operation === "setPolling") {
             if (response.snapshot !== null && response.snapshot !== undefined) {
@@ -726,6 +839,10 @@ export function createAvailabilityActions() {
           }
         } catch {
           if (disposed || (quiet && readVersion !== stateReadVersion)) return;
+          if (operation === "enqueueRestorations" || operation === "cancelRestorations") {
+            restoreQueueUncertain = true;
+            text("restore-options-status", "Queue update could not be confirmed. The backend may still be restoring VMs. Reconnect to read queue status before adding more.");
+          }
           if (!quiet && (launchId || operation === "armDeployment")) {
             launchId = undefined;
             deploymentUncertain = true;
@@ -764,6 +881,23 @@ export function createAvailabilityActions() {
           case "hyperstack-refresh":
             void run("refresh");
             break;
+          case "hyperstack-restore-reload":
+            void run("hibernatedOptions");
+            break;
+          case "hyperstack-restore-arm":
+            if (busy) return;
+            void run("enqueueRestorations");
+            break;
+          case "hyperstack-restore-cancel-selected":
+            if (busy) return;
+            cancelSelectedRestores = true;
+            void run("cancelRestorations");
+            break;
+          case "hyperstack-restore-cancel-all":
+            if (busy) return;
+            cancelSelectedRestores = false;
+            void run("cancelRestorations");
+            break;
           case "hyperstack-deploy-reload":
             text("deploy-options-status", "Loading VM options…");
             void run("deploymentOptions");
@@ -785,6 +919,9 @@ export function createAvailabilityActions() {
           case "hyperstack-region":
           case "hyperstack-gpu":
           case "hyperstack-stock-status":
+            try { window.sessionStorage.setItem(stockPreferenceKey, value("stock-status")); } catch { /* Optional session preference. */ }
+            renderResults();
+            break;
           case "hyperstack-query":
             renderResults();
             break;

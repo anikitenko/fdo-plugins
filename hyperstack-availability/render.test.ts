@@ -626,3 +626,18 @@ test("renders hourly USD prices and an explicit unavailable fallback", () => {
   const prices = rows.map(row => row.children.filter((child): child is MarkupNode => typeof child !== "string" && child.tag === "td")[5]).map(textContent);
   assert.deepEqual(prices, ["12.50", "0.00", "Unavailable"]);
 });
+
+test("renders a multi-VM restore queue with independent cancellation and explicit charges", () => {
+  const root = render({configuration: ready, snapshot});
+  const picker = byId(root, "hyperstack-restore-vm");
+  assert.equal(picker.tag, "select");
+  assert.equal(picker.attributes.multiple, "multiple");
+  const cancellations = byId(root, "hyperstack-restore-cancel-vm");
+  assert.equal(cancellations.attributes.multiple, "multiple");
+  assert.equal(byId(root, "hyperstack-restore-queue").tag, "ul");
+  assert.match(visibleText(root), /I authorize restoration of all selected VMs/);
+  assert.match(textContent(byId(root, "hyperstack-restore-arm")), /Add selected VMs to queue/);
+  for (const id of ["hyperstack-restore-arm", "hyperstack-restore-cancel-selected", "hyperstack-restore-cancel-all"]) {
+    assert.equal(byId(root, id).attributes.type, "button");
+  }
+});

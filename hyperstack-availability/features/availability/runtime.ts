@@ -70,7 +70,7 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
   const state = (): BackendViewState => ({ok: true, configuration, snapshot, monitoring, deployment, error: error ?? preferenceError, refreshing, pollingSeconds});
   const schedule = () => {
     stopTimer();
-    const seconds = deployment?.status === "waiting" ? 60 : pollingSeconds;
+    const seconds = (deployment?.status === "waiting" || monitoring?.restorations?.some(e => e.state.status === "waiting")) ? 60 : pollingSeconds;
     if (!running || disposed || seconds === 0) return;
     timer = clock.setTimeout(() => {timer = undefined; if (!disposed && running) void refresh().catch(() => {});}, seconds * 1000);
   };
@@ -127,6 +127,7 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
     getState: state,
     getConfiguration: async () => state(),
     refresh,
+    hibernatedOptions: () => exclusive(() => backend.hibernatedOptions()),
     async deploymentOptions(content?: unknown): Promise<CatalogResult> {
       const force = typeof content === "object" && content !== null && "force" in content && content.force === true;
       if (!force && catalog && catalog.expires > clock.now()) return catalog.result;
@@ -183,6 +184,24 @@ export function createAvailabilityRuntime(options: AvailabilityBackendOptions & 
       if (result.deployment?.status === "waiting" && !disposed) void refresh().catch(() => {});
       else schedule();
       return result;
+    },
+    async enqueueRestorations(content: unknown) {
+      const result = await exclusive(async () => {
+        const result = await backend.enqueueRestorations(content);
+        remember(result);
+        return result;
+      });
+      if (result.ok && !disposed) void refresh().catch(() => {});
+      else schedule();
+      return result;
+    },
+    async cancelRestorations(content?: unknown) {
+      return exclusive(async () => {
+        const result = await backend.cancelRestorations(content);
+        remember(result);
+        schedule();
+        return result;
+      });
     },
     async cancelDeployment() {
       return exclusive(async () => {

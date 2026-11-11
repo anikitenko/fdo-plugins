@@ -598,6 +598,7 @@ export function renderAvailability(
     renderConnectionControls(dom, state, classes),
     renderAvailabilityFilters(dom, state, classes),
     renderAvailabilityResults(dom, state, classes),
+    renderRestorationControls(dom, classes),
     renderDeploymentControls(dom, classes),
   );
 }
@@ -635,7 +636,25 @@ function renderDeploymentControls(dom: DOM, classes: AvailabilityViewClasses): s
       command(dom, "hyperstack-deploy-arm", "Create one VM when available", true, classes, true),
       command(dom, "hyperstack-deploy-cancel", "Cancel waiting", true, classes),
     ),
-    paragraph(dom, "No VM creation is armed.", {id: "hyperstack-deploy-status", role: "status", "aria-live": "polite"}),
+    paragraph(dom, "No VM operation is armed.", {id: "hyperstack-deploy-status", role: "status", "aria-live": "polite"}),
     dom.createElement("a", {href: "https://console.hyperstack.cloud", target: "_blank", rel: "noopener noreferrer"}, "Manage environments and SSH keys in Hyperstack"),
+  );
+}
+
+function renderRestorationControls(dom: DOM, classes: AvailabilityViewClasses): string {
+  return dom.createElement("section", {class: classes.panel ?? "", "aria-labelledby": "hyperstack-restore-heading"},
+    dom.createElement("h2", {id: "hyperstack-restore-heading"}, "Restore queue"),
+    paragraph(dom, "Select one or more hibernated GPU VMs to add to the restore queue. Each VM waits for its own region and configuration; available configurations restore independently. Checks run every minute and resume after backend restart.", {class: classes.muted ?? ""}),
+    command(dom, "hyperstack-restore-reload", "Load hibernated VMs", true, classes),
+    labeledField(dom, "hyperstack-restore-vm", "Hibernated GPU VMs (select multiple)", dom.createElement("select", {id: "hyperstack-restore-vm", multiple: "multiple", size: "6", disabled: "disabled"}, option(dom, "", "Load hibernated VMs first", true)), classes),
+    labeledField(dom, "hyperstack-restore-charges", "I authorize restoration of all selected VMs and the resulting Hyperstack charges", dom.createElement("input", {id: "hyperstack-restore-charges", type: "checkbox"}), classes),
+    command(dom, "hyperstack-restore-arm", "Add selected VMs to queue", true, classes, true),
+    paragraph(dom, "Load your hibernated VMs, then select those to restore.", {id: "hyperstack-restore-options-status", role: "status", "aria-live": "polite"}),
+    paragraph(dom, "No VMs queued for restoration.", {id: "hyperstack-restore-queue-status", role: "status", "aria-live": "polite"}),
+    dom.createElement("ul", {id: "hyperstack-restore-queue", "aria-label": "Restore queue entries"}),
+    labeledField(dom, "hyperstack-restore-cancel-vm", "Waiting VMs to cancel (select multiple)", dom.createElement("select", {id: "hyperstack-restore-cancel-vm", multiple: "multiple", size: "4", disabled: "disabled"}), classes),
+    command(dom, "hyperstack-restore-cancel-selected", "Cancel selected waiting VMs", true, classes),
+    command(dom, "hyperstack-restore-cancel-all", "Cancel all waiting restores", true, classes),
+    paragraph(dom, "Submitted and uncertain requests are never retried automatically. Cancelling waiting leaves existing VMs unchanged. VM creation below is independent of this queue.", {class: classes.muted ?? ""}),
   );
 }

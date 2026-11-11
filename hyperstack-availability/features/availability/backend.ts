@@ -1,3 +1,7 @@
+import {createRestorationQueue} from "./restoration-queue";
+import type {RestorationPlan} from "./deployment";
+import {matchingVmStock} from "./restoration";
+import type {createRestorationCatalogService, HibernatedResult} from "./restoration";
 import type {MonitoringPersistence} from "./monitoring";
 import type {CatalogResult, DeploymentCatalog, DeploymentCatalogService} from "./catalog";
 import type {FDO_SDK} from "@anikitenko/fdo-sdk";
@@ -20,6 +24,9 @@ export const AVAILABILITY_HANDLERS = {
   removeConnection: "hyperstack.availability.removeConnection",
   refresh: "hyperstack.availability.refresh",
   armDeployment: "hyperstack.availability.armDeployment",
+  enqueueRestorations: "hyperstack.availability.enqueueRestorations",
+  cancelRestorations: "hyperstack.availability.cancelRestorations",
+  hibernatedOptions: "hyperstack.availability.hibernatedOptions",
   cancelDeployment: "hyperstack.availability.cancelDeployment",
 } as const;
 
@@ -99,11 +106,15 @@ export interface AvailabilityBackendOptions {
   readonly service: AvailabilityService;
   readonly deploymentService?: DeploymentService;
   readonly catalogService?: DeploymentCatalogService;
+  readonly restorationCatalogService?: ReturnType<typeof createRestorationCatalogService>;
   readonly monitoring?: MonitoringPersistence;
 }
 
 export interface AvailabilityBackend {
   deploymentOptions(): Promise<CatalogResult>;
+  hibernatedOptions(): Promise<HibernatedResult>;
+  enqueueRestorations(content: unknown): Promise<AvailabilityConfigurationResult>;
+  cancelRestorations(content?: unknown): Promise<AvailabilityConfigurationResult>;
   getConfiguration(): Promise<AvailabilityConfigurationResult>;
   /** UI_MESSAGE content is passed directly: {apiKey: string}. */
   saveConnection(content: unknown): Promise<AvailabilityConfigurationResult>;
@@ -333,6 +344,12 @@ export function createAvailabilityBackend(
 ): AvailabilityBackend {
   const {secrets, service} = options;
   const deployment = options.deploymentService ? createDeploymentController(options.deploymentService) : null;
+  const restorations = options.deploymentService ? createRestorationQueue(options.deploymentService) : null;
+  const monitoringRecord = (): MonitoringRecord | undefined => {
+    const current = deployment?.record();
+    const entries = restorations?.entries();
+    return current && {...current, ...(entries?.length ? {restorations: entries} : {})};
+  };
   let catalog: DeploymentCatalog | null = null;
   let latestSnapshot: AvailabilitySnapshot | null = null;
   let queue: Promise<void> = Promise.resolve();
@@ -344,6 +361,7 @@ export function createAvailabilityBackend(
     try {
       const saved = await options.monitoring?.load();
       deployment?.restore(saved);
+      restorations?.restore(typeof saved === "object" && saved !== null && "restorations" in saved ? saved.restorations : undefined);
       monitoringLoaded = true;
       monitoringError = false;
       return true;
@@ -352,12 +370,12 @@ export function createAvailabilityBackend(
 
   function monitoringView(): MonitoringRecord | undefined {
     if (!deployment || !options.monitoring) return undefined;
-    const current = deployment.record();
+    const current = monitoringRecord()!;
     if (!monitoringError) return current;
     if (current.state.status === "submitted" || current.state.status === "uncertain") {
       return {...current, state: {...current.state, message: `${current.state.message} The latest status could not be saved; verify the VM in Hyperstack after restart.`}};
     }
-    return {version: 1, plan: null, state: {status: "failed", message: "Persistent monitoring storage is unavailable or invalid. Monitoring is stopped. Allow persistent storage in plugin permissions and reload, or use Cancel waiting to clear invalid saved monitoring."}};
+    return {version: 1, plan: null, restorations: current.restorations?.map(entry => ({...entry, state: entry.state.status === "waiting" ? {status: "failed", vmId: entry.plan.restoreVmId, message: "Monitoring paused because persistent storage is unavailable. Restore storage access and reload status."} : entry.state})), state: {status: "failed", message: "Persistent monitoring storage is unavailable or invalid. Monitoring is stopped. Allow persistent storage in plugin permissions and reload, or use Cancel waiting to clear invalid saved monitoring."}};
   }
 
   async function persistMonitoring(): Promise<void> {
@@ -365,7 +383,7 @@ export function createAvailabilityBackend(
     if (!options.monitoring || !deployment) return;
     try {
       if (!monitoringLoaded || monitoringError) throw new Error("Monitoring storage unavailable");
-      await options.monitoring.save(deployment.record());
+      await options.monitoring.save(monitoringRecord()!);
     } catch { monitoringError = true; throw new Error("Monitoring storage unavailable"); }
   }
 
@@ -396,6 +414,62 @@ export function createAvailabilityBackend(
   }
 
   return {
+    enqueueRestorations(content: unknown) {
+      return exclusive(async () => {
+        const inspected = await inspectConfiguration();
+        const invalid = () => ({...failure(inspected.configuration, "invalid_input", "Select up to 100 hibernated VMs with matching regional flavors and acknowledge charges. Submitted or uncertain VMs cannot be queued again.", false), monitoring: monitoringView()});
+        if (!await restoreMonitoring()) return {...storageFailure({code: "storage_unavailable"}), monitoring: monitoringView()};
+        if (!inspected.ok || !inspected.configuration.ready || !restorations || !options.restorationCatalogService || !options.monitoring) return invalid();
+        const input = typeof content === "object" && content !== null ? content as Record<string, unknown> : {};
+        if (input.confirmCharges !== true || !Array.isArray(input.vmIds) || !input.vmIds.length || input.vmIds.length > 100
+          || !input.vmIds.every(id => Number.isSafeInteger(id) && id > 0)) return invalid();
+        const ids = [...new Set(input.vmIds as number[])];
+        try {
+          const key = await secrets.get(AVAILABILITY_SECRET_KEY);
+          if (!validCredential(key)) return invalid();
+          const result = await options.restorationCatalogService.load(key, {signal: options.signal});
+          if (!result.ok || !latestSnapshot) return invalid();
+          const plans: RestorationPlan[] = [];
+          const legacy = deployment?.record();
+          for (const id of ids) {
+            if (legacy?.plan && "restoreVmId" in legacy.plan && legacy.plan.restoreVmId === id && ["waiting", "creating", "submitted", "uncertain"].includes(legacy.state.status)) return invalid();
+            const previous = restorations.entries().find(e => e.plan.restoreVmId === id);
+            if (previous && ["submitted", "uncertain"].includes(previous.state.status)) return invalid();
+            const vm = result.vms.find(v => v.id === id);
+            const item = vm && matchingVmStock(vm, latestSnapshot.items);
+            if (!vm || !item) return invalid();
+            plans.push({restoreVmId: vm.id, name: vm.name, region: vm.region, flavor: vm.flavor, itemId: item.id});
+          }
+          restorations.add(plans);
+        } catch { return invalid(); }
+        try { await persistMonitoring(); }
+        catch { restorations.cancel(ids); return {...storageFailure({code: "storage_unavailable"}), monitoring: monitoringView()}; }
+        return {...inspected, monitoring: monitoringView()};
+      });
+    },
+    cancelRestorations(content?: unknown) {
+      return exclusive(async () => {
+        const inspected = await inspectConfiguration();
+        if (!await restoreMonitoring()) return {...storageFailure({code: "storage_unavailable"}), monitoring: monitoringView()};
+        const input = typeof content === "object" && content !== null ? content as Record<string, unknown> : {};
+        if (input.vmIds !== undefined && (!Array.isArray(input.vmIds) || !input.vmIds.length || input.vmIds.length > 200 || !input.vmIds.every(id => Number.isSafeInteger(id) && id > 0))) {
+          return {...failure(inspected.configuration, "invalid_input", "Choose valid VM IDs to cancel.", false), monitoring: monitoringView()};
+        }
+        restorations?.cancel(input.vmIds as number[] | undefined);
+        try { await persistMonitoring(); }
+        catch { return {...storageFailure({code: "storage_unavailable"}), monitoring: monitoringView()}; }
+        return {...inspected, monitoring: monitoringView()};
+      });
+    },
+    hibernatedOptions() {
+      return exclusive(async () => {
+        try {
+          const key = await secrets.get(AVAILABILITY_SECRET_KEY);
+          if (!validCredential(key) || !options.restorationCatalogService) throw new Error("Unavailable");
+          return await options.restorationCatalogService.load(key, {signal: options.signal});
+        } catch { return {ok: false as const, message: "Could not load hibernated VMs. Check connection and VM read permissions."}; }
+      });
+    },
     deploymentOptions() {
       return exclusive(async () => {
         try {
@@ -419,6 +493,7 @@ export function createAvailabilityBackend(
       return exclusive(async () => {
         if (!await restoreMonitoring()) return storageFailure({code: "storage_unavailable"});
         deployment?.cancel();
+        restorations?.cancel();
         try { await persistMonitoring(); } catch { return storageFailure({code: "storage_unavailable"}); }
         latestSnapshot = null;
         catalog = null;
@@ -448,7 +523,7 @@ export function createAvailabilityBackend(
 
         // Reading back verifies the read grant needed by refresh as well as
         // persistence. No credential value is included in the result.
-        return inspectConfiguration();
+        return {...await inspectConfiguration(), monitoring: monitoringView()};
       });
     },
 
@@ -456,6 +531,7 @@ export function createAvailabilityBackend(
       return exclusive(async () => {
         if (!await restoreMonitoring()) return storageFailure({code: "storage_unavailable"});
         deployment?.cancel();
+        restorations?.cancel();
         try { await persistMonitoring(); } catch { return storageFailure({code: "storage_unavailable"}); }
         latestSnapshot = null;
         catalog = null;
@@ -466,6 +542,7 @@ export function createAvailabilityBackend(
           return {
             ok: true,
             configuration: configuration("credential_required"),
+            monitoring: monitoringView(),
           };
         } catch (error: unknown) {
           return storageFailure(error);
@@ -478,7 +555,22 @@ export function createAvailabilityBackend(
         const inspected = await inspectConfiguration();
         if (!await restoreMonitoring()) return {...inspected, monitoring: monitoringView(), deployment: monitoringView()?.state};
         if (!inspected.ok || !inspected.configuration.ready || !deployment) return inspected;
-        if (options.catalogService) {
+        const restoreInput = typeof content === "object" && content !== null && "restoreVmId" in content ? content as Record<string, unknown> : null;
+        if (restoreInput) {
+          // Resolve every configuration field server-side from a fresh account read.
+          // The client only chooses a VM ID and acknowledges charges.
+          try {
+            if (restoreInput.confirmCharges !== true || !Number.isSafeInteger(restoreInput.restoreVmId) || !options.restorationCatalogService) throw new Error("Invalid selection");
+            if (restorations?.entries().some(e => e.plan.restoreVmId === restoreInput.restoreVmId && ["waiting", "creating", "submitted", "uncertain"].includes(e.state.status))) throw new Error("Already queued");
+            const key = await secrets.get(AVAILABILITY_SECRET_KEY);
+            if (!validCredential(key)) throw new Error("Missing credential");
+            const result = await options.restorationCatalogService.load(key, {signal: options.signal});
+            const vm = result.ok ? result.vms.find(v => v.id === restoreInput.restoreVmId) : undefined;
+            const item = vm && latestSnapshot ? matchingVmStock(vm, latestSnapshot.items) : undefined;
+            if (!vm || !item) throw new Error("No matching configuration");
+            content = {restoreVmId: vm.id, name: vm.name, region: vm.region, flavor: vm.flavor, itemId: item.id, confirmCharges: true};
+          } catch { return {...inspected, deployment: {status: "failed" as const, message: "Reload hibernated VMs and availability. Select a hibernated GPU VM with an exact matching region and configuration, and acknowledge restore charges."}}; }
+        } else if (options.catalogService) {
           const input = typeof content === "object" && content !== null ? content as Record<string, unknown> : {};
           const item = latestSnapshot?.items.find(i => i.id === input.itemId);
           if (!catalog || !item
@@ -502,6 +594,7 @@ export function createAvailabilityBackend(
           // Explicit cancellation may discard an invalid saved plan. The new
           // cancelled marker must still flush successfully before we report it.
           deployment?.restore({version: 1, plan: null, state: {status: "cancelled"}});
+          restorations?.restore(undefined);
           monitoringLoaded = true;
           monitoringError = false;
         }
@@ -542,10 +635,14 @@ export function createAvailabilityBackend(
 
           latestSnapshot = result.snapshot;
           const launchId = typeof content === "object" && content !== null && "launchId" in content ? content.launchId : undefined;
+          const previousDeployment = deployment?.record();
           const deploymentState = deployment && monitoringReady
             ? await deployment.onSnapshot(apiKey, result.snapshot, launchId, persistMonitoring, options.signal)
             : monitoringView()?.state;
           if (monitoringReady) {
+            const used = new Set<string>();
+            if (previousDeployment?.state.status === "waiting" && previousDeployment.plan && deploymentState?.status !== "waiting") used.add(previousDeployment.plan.itemId);
+            await restorations?.onSnapshot(apiKey, result.snapshot, persistMonitoring, options.signal, used);
             try { await persistMonitoring(); } catch { /* Creating marker remains durable; never retry the POST. */ }
           }
           return {

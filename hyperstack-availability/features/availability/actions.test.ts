@@ -148,6 +148,16 @@ class ViewDocument {
       results: "section",
       "results-body": "tbody",
       empty: "p",
+      "restore-reload": "button",
+      "restore-arm": "button",
+      "restore-vm": "select",
+      "restore-charges": "input",
+      "restore-options-status": "p",
+      "restore-queue": "ul",
+      "restore-queue-status": "p",
+      "restore-cancel-vm": "select",
+      "restore-cancel-selected": "button",
+      "restore-cancel-all": "button",
       "deploy-reload": "button",
       "deploy-options-status": "p",
       "deploy-ssh": "input",
@@ -309,16 +319,17 @@ function success(data: AvailabilitySnapshot): AvailabilityRefreshResult {
   return {ok: true, configuration: ready, snapshot: data};
 }
 
-type Reply = AvailabilityConfigurationResult | AvailabilityRefreshResult | import("./catalog").CatalogResult | import("./runtime").BackendViewState;
+type Reply = AvailabilityConfigurationResult | AvailabilityRefreshResult | import("./catalog").CatalogResult | import("./runtime").BackendViewState | import("./restoration").HibernatedResult;
 type Responder = (call: BridgeCall) => Promise<Reply>;
 
-function harness(respond: Responder, optionsReply?: import("./catalog").CatalogResult) {
+function harness(respond: Responder, optionsReply?: import("./catalog").CatalogResult, session = new Map<string, string>()) {
   const document = new ViewDocument();
   const calls: BridgeCall[] = [];
   const timers = new Map<number, {callback: () => void; delay: number}>();
   let nextTimer = 0;
 
   const window = {
+    sessionStorage: {getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => {session.set(key, value);}},
     setTimeout(callback: () => void, delay: number) {
       const id = ++nextTimer;
       timers.set(id, {callback, delay});
@@ -650,4 +661,64 @@ test("cached and updated rows display hourly prices without turning missing pric
   data = {...data, items: [{...data.items[0], hourlyPrice: null}]};
   view.fireTimer(); await settle();
   assert.equal(view.document.get("results-body").querySelector("tr")!.children[5].textContent, "Unavailable");
+});
+
+
+test("stock selection survives view recreation for this session and rejects invalid saved values", async () => {
+  const session = new Map<string, string>();
+  const first = harness(async () => cached(), undefined, session);
+  await settle();
+  first.change("stock-status", "unavailable");
+  assert.equal(first.document.get("results-body").children.length, 0);
+  first.dispose();
+  const second = harness(async () => cached(), undefined, session);
+  await settle();
+  assert.equal(second.document.get("stock-status").value, "unavailable");
+  assert.equal(second.document.get("results-body").children.length, 0);
+  second.dispose();
+  session.set("hyperstack.stock-status.v1", "invalid");
+  const third = harness(async () => cached(), undefined, session);
+  await settle();
+  assert.equal(third.document.get("stock-status").value, "all");
+  third.dispose();
+});
+
+test("restore picker adds multiple selected VMs with one charge acknowledgement and displays independent statuses", async () => {
+  const entries = [42, 43].map(id => ({plan: {restoreVmId: id, name: `existing-${id}`, region: "Region A", flavor: `flavor-${id}`, itemId: `type-${id}`}, state: {status: "waiting" as const, message: "Waiting"}}));
+  let queued = false;
+  const view = harness(async call => {
+    if (call.handler === AVAILABILITY_HANDLERS.hibernatedOptions) return {ok: true, vms: entries.map(e => ({id: e.plan.restoreVmId, name: e.plan.name, region: e.plan.region, flavor: e.plan.flavor, gpu: "GPU A", gpuCount: 1}))};
+    if (call.handler === AVAILABILITY_HANDLERS.enqueueRestorations) queued = true;
+    if (call.handler === AVAILABILITY_HANDLERS.cancelRestorations) {
+      const ids = (call.content as {vmIds?: number[]}).vmIds;
+      for (const entry of entries) if (!ids || ids.includes(entry.plan.restoreVmId)) Object.assign(entry.state, {status: "cancelled", message: "Cancelled"});
+    }
+    return {...cached(), monitoring: {version: 1, plan: null, state: {status: "idle", message: "No creation armed"}, restorations: queued ? entries : []}};
+  });
+  await settle();
+  view.click("restore-reload");
+  await settle();
+  for (const option of view.document.get("restore-vm").children) option.selected = ["42", "43"].includes(option.value);
+  view.click("restore-arm");
+  await settle();
+  assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.enqueueRestorations).length, 0);
+  view.document.get("restore-charges").checked = true;
+  view.click("restore-arm");
+  view.click("restore-arm");
+  await settle();
+  assert.deepEqual(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.enqueueRestorations).map(c => c.content), [{vmIds: [42, 43], confirmCharges: true}]);
+  assert.equal(view.document.get("restore-charges").checked, false);
+  assert.match(view.document.get("restore-queue-status").textContent, /2 waiting/);
+  assert.equal(view.document.get("restore-queue").children.length, 2);
+  assert.equal(view.document.get("restore-arm").hasAttribute("disabled"), false, "More VMs can be added while others wait");
+  view.document.get("restore-cancel-vm").children[0].selected = true;
+  view.click("restore-cancel-selected");
+  await settle();
+  assert.deepEqual(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.cancelRestorations)[0].content, {vmIds: [42]});
+  assert.match(view.document.get("restore-queue-status").textContent, /1 waiting/);
+  view.click("restore-cancel-all");
+  await settle();
+  assert.deepEqual(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.cancelRestorations)[1].content, {});
+  assert.match(view.document.get("restore-queue-status").textContent, /0 waiting/);
+  view.dispose();
 });
