@@ -322,14 +322,13 @@ function success(data: AvailabilitySnapshot): AvailabilityRefreshResult {
 type Reply = AvailabilityConfigurationResult | AvailabilityRefreshResult | import("./catalog").CatalogResult | import("./runtime").BackendViewState | import("./restoration").HibernatedResult;
 type Responder = (call: BridgeCall) => Promise<Reply>;
 
-function harness(respond: Responder, optionsReply?: import("./catalog").CatalogResult, session = new Map<string, string>()) {
+function harness(respond: Responder, optionsReply?: import("./catalog").CatalogResult) {
   const document = new ViewDocument();
   const calls: BridgeCall[] = [];
   const timers = new Map<number, {callback: () => void; delay: number}>();
   let nextTimer = 0;
 
   const window = {
-    sessionStorage: {getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => {session.set(key, value);}},
     setTimeout(callback: () => void, delay: number) {
       const id = ++nextTimer;
       timers.set(id, {callback, delay});
@@ -664,23 +663,17 @@ test("cached and updated rows display hourly prices without turning missing pric
 });
 
 
-test("stock selection survives view recreation for this session and rejects invalid saved values", async () => {
-  const session = new Map<string, string>();
-  const first = harness(async () => cached(), undefined, session);
+test("stock filter applies to the current view and resets when the view is recreated", async () => {
+  const first = harness(async () => cached());
   await settle();
   first.change("stock-status", "unavailable");
   assert.equal(first.document.get("results-body").children.length, 0);
   first.dispose();
-  const second = harness(async () => cached(), undefined, session);
+  const second = harness(async () => cached());
   await settle();
-  assert.equal(second.document.get("stock-status").value, "unavailable");
-  assert.equal(second.document.get("results-body").children.length, 0);
+  assert.equal(second.document.get("stock-status").value, "all");
+  assert.equal(second.document.get("results-body").children.length, 1);
   second.dispose();
-  session.set("hyperstack.stock-status.v1", "invalid");
-  const third = harness(async () => cached(), undefined, session);
-  await settle();
-  assert.equal(third.document.get("stock-status").value, "all");
-  third.dispose();
 });
 
 test("restore picker adds multiple selected VMs with one charge acknowledgement and displays independent statuses", async () => {

@@ -86,13 +86,6 @@ export function createAvailabilityActions() {
       technicalDetails.appendChild(technicalText);
       root.appendChild(technicalDetails);
 
-      const stockPreferenceKey = "hyperstack.stock-status.v1";
-      try {
-        const saved = window.sessionStorage.getItem(stockPreferenceKey);
-        const node = document.getElementById("hyperstack-stock-status");
-        if (saved && ["all", "available", "unavailable", "unknown"].includes(saved) && node && "value" in node) node.value = saved;
-      } catch { /* The filter still works when browser storage is unavailable. */ }
-
       const get = (name: string) =>
         document.getElementById(`hyperstack-${name}`);
 
@@ -919,7 +912,6 @@ export function createAvailabilityActions() {
           case "hyperstack-region":
           case "hyperstack-gpu":
           case "hyperstack-stock-status":
-            try { window.sessionStorage.setItem(stockPreferenceKey, value("stock-status")); } catch { /* Optional session preference. */ }
             renderResults();
             break;
           case "hyperstack-query":
