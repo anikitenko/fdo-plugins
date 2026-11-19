@@ -566,7 +566,14 @@ export function createAvailabilityActions() {
         if (lastCheck) {
           const time = document.createElement("time");
           time.setAttribute("datetime", snapshot.checkedAt);
-          time.textContent = snapshot.checkedAt;
+          // Detect locale and timezone in the user's browser, independently of
+          // the backend. Keep the UTC instant in datetime for machine readers.
+          const formatter = new Intl.DateTimeFormat(undefined, {
+            year: "numeric", month: "short", day: "numeric",
+            hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short",
+          });
+          time.textContent = formatter.format(new Date(snapshot.checkedAt));
+          time.setAttribute("title", formatter.resolvedOptions().timeZone);
           lastCheck.replaceChildren(
             document.createTextNode("Last successful check: "),
             time,

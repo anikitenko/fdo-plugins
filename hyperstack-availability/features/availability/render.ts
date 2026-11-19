@@ -447,11 +447,15 @@ export function renderLastCheck(
   };
 
   if (checkedAt && Number.isFinite(Date.parse(checkedAt))) {
+    const formatter = new Intl.DateTimeFormat(undefined, {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short",
+    });
     return dom.createElement(
       "p",
       attributes,
       "Last successful check: ",
-      dom.createElement("time", {datetime: checkedAt}, escapeText(checkedAt)),
+      dom.createElement("time", {datetime: checkedAt, title: formatter.resolvedOptions().timeZone}, escapeText(formatter.format(new Date(checkedAt)))),
     );
   }
 

@@ -502,7 +502,12 @@ test("renders stock evidence, summary and successful check time", () => {
   const time = elements(byId(root, ids.lastCheck)).find((node) => node.tag === "time");
   assert.ok(time);
   assert.equal(time.attributes.datetime, snapshot.checkedAt);
-  assert.equal(textContent(time), snapshot.checkedAt);
+  const localDate = new Intl.DateTimeFormat(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short",
+  });
+  assert.equal(textContent(time), localDate.format(new Date(snapshot.checkedAt)));
+  assert.equal(time.attributes.title, localDate.resolvedOptions().timeZone);
   assert.equal(isHidden(byId(root, ids.empty)), true);
   assert.equal(isHidden(byId(root, ids.stale)), true);
   assertRegisteredStyles(root);
@@ -585,7 +590,8 @@ test("preserves filters, empty states, busy controls and stale results", () => {
     elements(byId(stale, ids.resultsBody)).filter((node) => node.tag === "tr").length,
     3,
   );
-  assert.match(textContent(byId(stale, ids.lastCheck)), /2026-10-30/);
+  const lastCheck = elements(byId(stale, ids.lastCheck)).find(node => node.tag === "time");
+  assert.equal(lastCheck?.attributes.datetime, snapshot.checkedAt);
 });
 
 test("escapes provider data and emits registered styles on repeated renders", () => {

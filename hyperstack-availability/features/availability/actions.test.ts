@@ -769,3 +769,20 @@ test("restore queue counts only active entries and keeps submissions and issues 
   assert.equal(picker.children[3].selected, true, "Reload keeps selections still present in the catalog");
   view.dispose();
 });
+
+
+test("last check uses the user's locale and detected timezone while retaining the UTC instant", async () => {
+  const data = snapshot("local-date-vm", 1);
+  const view = harness(async () => ({...cached(), snapshot: data}));
+  await settle();
+  const time = view.document.get("last-check").children.find(node => node.tagName === "time");
+  assert.ok(time);
+  const localDate = new Intl.DateTimeFormat(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short",
+  });
+  assert.equal(time.textContent, localDate.format(new Date(data.checkedAt)));
+  assert.equal(time.getAttribute("datetime"), data.checkedAt);
+  assert.equal(time.getAttribute("title"), localDate.resolvedOptions().timeZone);
+  view.dispose();
+});
