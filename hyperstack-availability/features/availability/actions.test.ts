@@ -154,6 +154,12 @@ class ViewDocument {
       "restore-charges": "input",
       "restore-options-status": "p",
       "restore-queue": "ul",
+      "restore-cancellation": "div",
+      "restore-history": "details",
+      "restore-history-summary": "summary",
+      "restore-history-list": "ul",
+      "restore-selection-status": "p",
+      "restore-review": "p",
       "restore-queue-status": "p",
       "restore-cancel-vm": "select",
       "restore-cancel-selected": "button",
@@ -691,11 +697,13 @@ test("restore picker adds multiple selected VMs with one charge acknowledgement 
   await settle();
   view.click("restore-reload");
   await settle();
+  assert.deepEqual(view.document.get("restore-vm").children.map(option => option.value), ["42", "43"]);
   for (const option of view.document.get("restore-vm").children) option.selected = ["42", "43"].includes(option.value);
   view.click("restore-arm");
   await settle();
   assert.equal(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.enqueueRestorations).length, 0);
   view.document.get("restore-charges").checked = true;
+  view.change("restore-charges", "");
   view.click("restore-arm");
   view.click("restore-arm");
   await settle();
@@ -703,15 +711,61 @@ test("restore picker adds multiple selected VMs with one charge acknowledgement 
   assert.equal(view.document.get("restore-charges").checked, false);
   assert.match(view.document.get("restore-queue-status").textContent, /2 waiting/);
   assert.equal(view.document.get("restore-queue").children.length, 2);
-  assert.equal(view.document.get("restore-arm").hasAttribute("disabled"), false, "More VMs can be added while others wait");
+  assert.equal(view.document.get("restore-arm").hasAttribute("disabled"), true, "Adding requires a new selection and acknowledgement");
+  assert.ok(view.document.get("restore-vm").children.every(option => option.hasAttribute("disabled")));
   view.document.get("restore-cancel-vm").children[0].selected = true;
+  view.change("restore-cancel-vm", "");
   view.click("restore-cancel-selected");
   await settle();
   assert.deepEqual(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.cancelRestorations)[0].content, {vmIds: [42]});
-  assert.match(view.document.get("restore-queue-status").textContent, /1 waiting/);
+  assert.equal(view.document.get("restore-queue-status").textContent, "1 VM in queue · 1 waiting");
+  assert.equal(view.document.get("restore-queue").children.length, 1);
+  assert.equal(view.document.get("restore-history-list").children.length, 1);
   view.click("restore-cancel-all");
   await settle();
   assert.deepEqual(view.calls.filter(c => c.handler === AVAILABILITY_HANDLERS.cancelRestorations)[1].content, {});
-  assert.match(view.document.get("restore-queue-status").textContent, /0 waiting/);
+  assert.equal(view.document.get("restore-queue-status").textContent, "No VMs queued for restoration.");
+  assert.equal(view.document.get("restore-queue").children.length, 0);
+  assert.equal(view.document.get("restore-history-list").children.length, 2);
+  assert.equal(view.document.get("restore-cancellation").hidden, true);
+  assert.equal(view.document.get("restore-history").hidden, false);
+  assert.ok(view.document.get("restore-vm").children.every(option => !option.hasAttribute("disabled")));
+  view.dispose();
+});
+
+
+test("restore queue counts only active entries and keeps submissions and issues in history", async () => {
+  const statuses = ["waiting", "creating", "submitted", "cancelled", "failed", "uncertain"] as const;
+  const entries = statuses.map((status, index) => ({
+    plan: {restoreVmId: index + 1, name: `vm-${index}`, region: "Region A", flavor: "flavor", itemId: "type"},
+    state: {status, message: `Status: ${status}`},
+  }));
+  const view = harness(async call => {
+    if (call.handler === AVAILABILITY_HANDLERS.hibernatedOptions) return {
+      ok: true, vms: entries.map(e => ({id: e.plan.restoreVmId, ...e.plan, gpu: "GPU", gpuCount: 1})),
+    };
+    return {...cached(), monitoring: {version: 1, plan: null, state: {status: "idle", message: "Idle"}, restorations: entries}};
+  });
+  await settle();
+  assert.equal(view.document.get("restore-queue-status").textContent, "2 VMs in queue · 1 waiting · 1 submitting");
+  assert.equal(view.document.get("restore-queue").children.length, 2);
+  assert.equal(view.document.get("restore-history-list").children.length, 4);
+  assert.equal(view.document.get("restore-cancel-vm").children.length, 1);
+  assert.equal(view.document.get("restore-review").hidden, false);
+  assert.match(view.document.get("restore-review").textContent, /2 restores need review/);
+  view.click("restore-reload");
+  await settle();
+  const picker = view.document.get("restore-vm");
+  assert.deepEqual(picker.children.filter(option => !option.hasAttribute("disabled")).map(option => option.value), ["4", "5"]);
+  picker.children[3].selected = true;
+  view.change("restore-vm", "");
+  assert.equal(view.document.get("restore-selection-status").textContent, "1 VM selected.");
+  assert.equal(view.document.get("restore-arm").hasAttribute("disabled"), true);
+  view.document.get("restore-charges").checked = true;
+  view.change("restore-charges", "");
+  assert.equal(view.document.get("restore-arm").hasAttribute("disabled"), false);
+  view.click("restore-reload");
+  await settle();
+  assert.equal(picker.children[3].selected, true, "Reload keeps selections still present in the catalog");
   view.dispose();
 });

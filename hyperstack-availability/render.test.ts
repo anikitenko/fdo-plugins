@@ -632,6 +632,9 @@ test("renders a multi-VM restore queue with independent cancellation and explici
   const picker = byId(root, "hyperstack-restore-vm");
   assert.equal(picker.tag, "select");
   assert.equal(picker.attributes.multiple, "multiple");
+  assert.equal(textContent(picker), "");
+  assert.equal(byId(root, "hyperstack-restore-history").tag, "details");
+  assert.ok("hidden" in byId(root, "hyperstack-restore-cancellation").attributes);
   const cancellations = byId(root, "hyperstack-restore-cancel-vm");
   assert.equal(cancellations.attributes.multiple, "multiple");
   assert.equal(byId(root, "hyperstack-restore-queue").tag, "ul");

@@ -27,6 +27,9 @@ export function createAvailabilityActions() {
       },
     },
     bindings: [
+      {selector: "#hyperstack-restore-vm", event: "change", handler: "command"},
+      {selector: "#hyperstack-restore-charges", event: "change", handler: "command"},
+      {selector: "#hyperstack-restore-cancel-vm", event: "change", handler: "command"},
       {selector: "#hyperstack-restore-reload", event: "click", handler: "command"},
       {selector: "#hyperstack-restore-arm", event: "click", handler: "command"},
       {selector: "#hyperstack-restore-cancel-selected", event: "click", handler: "command"},
@@ -68,6 +71,7 @@ export function createAvailabilityActions() {
       let restoreQueueUncertain = false;
       let cancelSelectedRestores = false;
       let restorationOptionsLoaded = false;
+      let blockedRestoreIds = new Set<number>();
       let launchId: string | undefined;
       let deploymentUncertain = false;
       let catalog: DeploymentCatalog | null = null;
@@ -121,6 +125,26 @@ export function createAvailabilityActions() {
         technicalDetails.removeAttribute("open");
       };
 
+      const selectedVmIds = (name: string): number[] => {
+        const select = get(name);
+        if (!select) return [];
+        return Array.from(select.children)
+          .filter(node => "selected" in node && node.selected === true && !node.hasAttribute("disabled") && "value" in node && Number(node.value) > 0)
+          .map(node => Number((node as HTMLOptionElement).value));
+      };
+
+      const updateRestoreOptions = () => {
+        const picker = get("restore-vm");
+        if (!picker) return;
+        for (const option of Array.from(picker.children)) {
+          const blocked = "value" in option && blockedRestoreIds.has(Number(option.value));
+          if (blocked) {
+            option.setAttribute("disabled", "disabled");
+            if ("selected" in option) option.selected = false;
+          } else option.removeAttribute("disabled");
+        }
+      };
+
       const updateControls = () => {
         if (disposed) return;
         const ready = configuration?.ready === true;
@@ -136,9 +160,15 @@ export function createAvailabilityActions() {
         disable("refresh", busy || !ready);
         disable("restore-reload", busy || !ready);
         disable("restore-vm", busy || !ready || !restorationOptionsLoaded);
-        disable("restore-arm", busy || !ready || !snapshot || !restorationOptionsLoaded || restoreQueueUncertain);
+        const selectedCount = selectedVmIds("restore-vm").length;
+        const acknowledgement = get("restore-charges");
+        const chargesConfirmed = Boolean(acknowledgement && "checked" in acknowledgement && acknowledgement.checked);
+        text("restore-selection-status", selectedCount ? `${selectedCount} VM${selectedCount === 1 ? "" : "s"} selected.` : "No VMs selected.");
+        text("restore-reload", busy ? "Please wait…" : restorationOptionsLoaded ? "Reload hibernated VMs" : "Load hibernated VMs");
+        disable("restore-charges", busy || !ready);
+        disable("restore-arm", busy || !ready || !snapshot || !restorationOptionsLoaded || restoreQueueUncertain || !selectedCount || !chargesConfirmed);
         disable("restore-cancel-vm", busy || restoreWaitingCount === 0);
-        disable("restore-cancel-selected", busy || restoreWaitingCount === 0);
+        disable("restore-cancel-selected", busy || selectedVmIds("restore-cancel-vm").length === 0);
         disable("restore-cancel-all", busy || restoreWaitingCount === 0);
         disable("deploy-arm", busy || !ready || !snapshot || !catalog || Boolean(launchId) || deploymentUncertain);
         disable("deploy-reload", busy || !ready || Boolean(launchId));
@@ -592,12 +622,6 @@ export function createAvailabilityActions() {
         };
         if (operation === "setPolling") content = {seconds: Number(value("polling"))};
         if (operation === "deploymentOptions") content = {force: catalogAttempted};
-        const selectedVmIds = (name: string): number[] => {
-          const select = get(name);
-          if (!select) return [];
-          return Array.from(select.children).filter(node => "selected" in node && node.selected === true && "value" in node && Number(node.value) > 0)
-            .map(node => Number((node as HTMLOptionElement).value));
-        };
         if (operation === "enqueueRestorations") {
           if (!configuration?.ready || restoreQueueUncertain) return;
           const vmIds = selectedVmIds("restore-vm");
@@ -651,12 +675,14 @@ export function createAvailabilityActions() {
           catalog = null;
           restorationOptionsLoaded = false;
           get("restore-vm")?.replaceChildren();
+          blockedRestoreIds.clear();
           catalogAttempted = false;
           renderDeploymentOptions();
           launchId = undefined;
           text("deploy-status", "Waiting cancelled because the connection changed.");
         }
 
+        if (operation === "hibernatedOptions") text("restore-options-status", "Loading hibernated GPU VMs…");
         if (operation === "deploymentOptions") text("deploy-options-status", "Loading VM options…");
         if (quiet) readingState = true;
         else {
@@ -677,23 +703,22 @@ export function createAvailabilityActions() {
           }
           if (operation === "hibernatedOptions") {
             const node = get("restore-vm");
+            const selectedIds = selectedVmIds("restore-vm");
             node?.replaceChildren();
             restorationOptionsLoaded = false;
             if (response.ok && Array.isArray(response.vms) && response.vms.every(v => isRecord(v) && Number.isSafeInteger(v.id) && Number(v.id) > 0 && [v.name, v.region, v.flavor].every(s => typeof s === "string"))) {
               const fragment = document.createDocumentFragment();
-              const placeholder = document.createElement("option");
-              placeholder.value = "";
-              placeholder.textContent = "Choose a hibernated VM";
-              fragment.appendChild(placeholder);
               for (const vm of response.vms) {
                 const entry = document.createElement("option");
                 entry.value = String(vm.id);
+                entry.selected = selectedIds.includes(Number(vm.id));
                 entry.textContent = `${vm.name} (#${vm.id}) · ${vm.region} · ${vm.flavor}`;
                 fragment.appendChild(entry);
               }
               node?.replaceChildren(fragment);
-              restorationOptionsLoaded = true;
-              text("restore-options-status", response.vms.length ? "Choose a VM to monitor its current configuration." : "No hibernated GPU VMs found.");
+              restorationOptionsLoaded = response.vms.length > 0;
+              updateRestoreOptions();
+              text("restore-options-status", response.vms.length ? "Select VMs above, confirm charges, then add them to the queue." : "No hibernated GPU VMs found.");
             } else text("restore-options-status", "Could not load hibernated GPU VMs. Check VM read permissions and reload.");
             return;
           }
@@ -726,16 +751,35 @@ export function createAvailabilityActions() {
             const selectedIds = selectedVmIds("restore-cancel-vm");
             const rows = document.createDocumentFragment();
             const choices = document.createDocumentFragment();
+            const history = document.createDocumentFragment();
+            let active = 0;
+            let historyCount = 0;
+            let reviewCount = 0;
+            blockedRestoreIds = new Set<number>();
             restoreWaitingCount = 0;
-            let submitted = 0;
+
             for (const entry of queue) {
               if (!isRecord(entry) || !isRecord(entry.plan) || !isRecord(entry.state) || !Number.isSafeInteger(entry.plan.restoreVmId)
                 || ![entry.plan.name, entry.plan.region, entry.plan.flavor, entry.state.status, entry.state.message].every(v => typeof v === "string")) continue;
               const label = `${entry.plan.name} (#${entry.plan.restoreVmId}) · ${entry.plan.region} · ${entry.plan.flavor}`;
               const row = document.createElement("li");
-              row.textContent = `${label} · ${entry.state.status}: ${entry.state.message}`;
-              rows.appendChild(row);
-              if (entry.state.status === "submitted") submitted++;
+              row.setAttribute("data-restore-status", String(entry.state.status));
+              const title = document.createElement("strong");
+              title.textContent = label;
+              const detail = document.createElement("span");
+              const status = String(entry.state.status);
+              detail.textContent = `${status.charAt(0).toUpperCase() + status.slice(1)} · ${entry.state.message}`;
+              row.appendChild(title);
+              row.appendChild(detail);
+              if (status === "waiting" || status === "creating") {
+                active++;
+                rows.appendChild(row);
+              } else {
+                historyCount++;
+                history.appendChild(row);
+              }
+              if (status === "uncertain" || status === "failed") reviewCount++;
+              if (!["cancelled", "failed"].includes(status)) blockedRestoreIds.add(Number(entry.plan.restoreVmId));
               if (entry.state.status === "waiting") {
                 restoreWaitingCount++;
                 const option = document.createElement("option");
@@ -747,8 +791,19 @@ export function createAvailabilityActions() {
             }
             list?.replaceChildren(rows);
             cancellation?.replaceChildren(choices);
-            text("restore-queue-status", queue.length ? `${queue.length} VMs in queue · ${restoreWaitingCount} waiting · ${submitted} restore requests submitted` : "No VMs queued for restoration.");
+            get("restore-history-list")?.replaceChildren(history);
+            show("restore-queue", active > 0);
+            show("restore-cancellation", restoreWaitingCount > 0);
+            show("restore-history", historyCount > 0);
+            text("restore-history-summary", `Restore history (${historyCount})`);
+            show("restore-review", reviewCount > 0);
+            text("restore-review", reviewCount ? `${reviewCount} restore${reviewCount === 1 ? " needs" : "s need"} review. Open restore history for details and check the VM status in Hyperstack.` : "");
+            text("restore-queue-status", active ? `${active} VM${active === 1 ? "" : "s"} in queue · ${restoreWaitingCount} waiting${active > restoreWaitingCount ? ` · ${active - restoreWaitingCount} submitting` : ""}` : "No VMs queued for restoration.");
+            updateRestoreOptions();
             restoreQueueUncertain = false;
+          }
+          if (operation === "cancelRestorations" && response.ok) {
+            text("restore-options-status", restoreWaitingCount ? "Selected waiting restores canceled." : "All waiting restores canceled.");
           }
           if (operation === "enqueueRestorations" && response.ok) {
             text("restore-options-status", "Selected VMs added. Each waits independently for its configuration.");
@@ -873,6 +928,11 @@ export function createAvailabilityActions() {
             break;
           case "hyperstack-refresh":
             void run("refresh");
+            break;
+          case "hyperstack-restore-vm":
+          case "hyperstack-restore-charges":
+          case "hyperstack-restore-cancel-vm":
+            updateControls();
             break;
           case "hyperstack-restore-reload":
             void run("hibernatedOptions");
