@@ -1,0 +1,81 @@
+# Hyperstack FinOps
+
+A standalone FDO plugin for investigating Hyperstack GPU infrastructure costs and reviewing hibernation or storage cleanup. Its dark sidebar, resource explorer, inspector, and action-plan layout follow the supplied design reference. It is registered in the repository’s `fdo-plugins.yaml` collection.
+
+## Start
+
+1. Install/import `/hyperstack-finops` through FDO with SDK 1.9.2 or newer. Grant its declared secret storage, persistent JSON storage, and public HTTPS capabilities.
+2. Open **Connection & API access**, save a Hyperstack API key, and choose **Sync billing**. Credentials stay in FDO’s encrypted secret service; they are never placed in iframe state or JSON storage.
+3. Use **Explore example** to inspect an explicitly labeled, read-only example without cloud credentials. Example data never authorizes a resource operation.
+
+The API key must have billing read access and access to the relevant VM, volume, environment and flavor information. Hibernation/deletion additionally require the corresponding Hyperstack API permissions.
+
+## Views
+
+- **Overview:** environment, region, resource-type and search filters; reported resource spend; dollar/percentage change; current-month linear projection; persistent configurable USD budget; cost drivers that open filtered resources.
+- **Resources:** live VMs, volumes, VM public IPs, and resources recovered from billing history and deleted usage. Includes flavor/GPU count, state, billed cost for the loaded dates, age and findings. The exact loaded range is visible above the summary. Neither the overview table nor Resources selects a VM automatically; click a resource to open its inspector. The sticky sidebar and its navigation scroll independently on short screens. A deleted training run remains searchable for the period that billed it. Historical environment/region/flavor metadata is retained after it was first observed. If that metadata was never supplied, it remains **Unknown** rather than being inferred.
+- **Inspector:** Billing, Origin, Dependencies and Activity. Effective rate is reported cost divided by reported billed hours. Creation/deletion and observation timestamps use the browser’s locale and detected timezone, with the IANA timezone on hover. Activity contains observed lifecycle timestamps and plugin operations; it does not claim to be the complete provider audit log.
+- **Optimization:** two verifiable findings: a stopped GPU VM with positive active billing and an AVAILABLE volume with verified zero attachments and positive active billing. Evidence includes observation time and estimated avoided charges. Unknown state, attachment or billing data cannot establish a finding. Contract savings remain Unknown.
+- **Cost changes:** resources sorted by dollar increase, with missing comparisons kept visible. Expand **Evidence & calculation** for reported amounts, hour/rate changes, creation/deletion evidence, and an arithmetic hours-versus-effective-rate attribution. Zero previous spend means newly billed, not necessarily newly created. A changed effective rate is not presented as proof of a pricebook change.
+- **Action plan:** stage hibernation or volume cleanup in the inspector; inspect exact target IDs, estimated impact, retained dependencies, IP retention and a timestamped capacity observation. Plans expire after 15 minutes and are discarded on Sync, credential changes or restart.
+- **Operations:** durable submitted, completed, failed and uncertain outcomes. A successful management response means **submitted**, not completed. A later Sync records completion only with positive provider evidence of HIBERNATED or DELETED state.
+
+## Billing semantics and coverage
+
+Billing windows use UTC boundaries, independent of display timezone. In addition to presets, choose **Custom date range**, edit **From** and **Through**, then **Apply date range**. Both calendar dates are inclusive; the API interval ends at midnight after Through, or at Sync time for today. Invalid/future dates, reversed ranges and ranges longer than 366 calendar days are rejected before API reads. Draft picker dates do not relabel the previous loaded report. Custom ranges compare the immediately preceding interval of equal duration. This month is compared with the same elapsed portion of the preceding month, capped at that month’s end. Last month compares full calendar months; yesterday and last seven days compare equal-duration preceding windows. The exact windows appear below the report. This-month projection extrapolates elapsed reported spend to month end; it is a run-rate estimate, not a provider forecast. If a bill is missing but some spend is known, **Known-spend month-end run rate** projects that known subtotal and explicitly lists how many bills are excluded. It does not establish total budget headroom. If no usable spend was returned, the UI explains which bills need retry rather than inventing a forecast.
+
+Resource cost is **reported billing**, never current price multiplied by age. The OpenAPI schema defines `usage_time` as hours. Effective billed rates and the account’s current pricebook are kept distinct. Pricebook values only supply a conservative GPU-rate estimate when a reported compute breakdown is unavailable; time-limited prices honor their validity window. Contract commitments and retained disk, shared-volume or public-IP charges may remain after hibernation. Estimates are potential avoided usage, not realized or guaranteed savings. For volumes, **Savings estimate window (hours after deletion)** means current storage rate × future hours (for example, $0.10/h × 24h = $2.40). It neither schedules deletion nor refunds a historical bill. This explanation appears before the field. VM hours instead mean expected hibernation duration; retained dependencies continue billing.
+
+Hyperstack reports public-IP charges as VM subresources, not an independent public-IP billing-history list. The plugin separates `publicip_incurred_bill` from the parent VM total and represents it as `public-ip:<parent VM ID>`. These IDs identify billing components, not independent public-IP API IDs. Historical IP addresses may be Unknown. Independent IP hours and effective IP rates are not supplied, so the IP inspector shows the reported IP charge, its parent VM, and an explicit explanation instead of an unavailable hourly KPI. VM uptime is never substituted for IP usage. IPs are reviewed alongside their parent VM, not deleted independently. A valid IP charge is kept even when an unrelated compute field is omitted. Selected-period zero IP charges are retained even when the historical IP row is created later from the previous-period response. This prevents a historical IP from becoming a phantom missing bill on each Sync. Zero-cost historical VM rows remain discoverable when needed as the parent of a billed IP. An IP retry accepts a valid endpoint-scoped cost without redundant identity attributes, while rejecting an explicitly mismatched VM ID. If either period lacks the IP split, the parent VM keeps its full bill in both periods for a consistent comparison. Any known IP amount remains inspectable as a component already included in that VM total; aggregation counts it once. Missing IP detail therefore does not invalidate otherwise reported spend, period change or projection. Coverage notes identify affected resources.
+
+The resource view covers VMs (including VM root-disk/CPU/RAM/ephemeral components), shared volumes, and VM public IPs. The separately displayed organization total may also include contracts, snapshots, object storage, AI services and adjustments; these are not silently assigned to a resource. Inventory, usage and previous-period failures are surfaced separately. Truly missing costs are not invented: known amounts remain visible as a labeled subtotal with a missing-bill count. Full-scope comparisons require both billed amounts for every scoped resource. When some pairs are missing, a clearly labeled **Comparable-resource change** still shows the dollar change for complete pairs. **Billing coverage** identifies each missing resource and selected/previous interval, includes the request diagnostics when available, and offers **Retry selected/previous bill** and **Retry all billing reads**. A missing bill is never treated as zero. Targeted retries use the documented per-resource billing-history endpoint (or VM subresource endpoint for IP charges), update the report, and perform no resource mutation. A successful retry explicitly confirms restoration. A failed retry updates the affected row with the latest reason, attempt count and timestamp; confirmed access denials or unusable provider payloads stop offering the same retry action. After changing permissions, use Sync billing to read fresh data. An IP amount included in a valid parent VM bill is labeled not separately itemized and links to that parent instead of prompting repeated IP retries. A fully read billing list with no entry establishes zero period cost. Provider pagination has a 100-page bound and fails closed rather than silently truncating. Subresource requests run in batches of six VMs. Sync is manual; there is no background cloud mutation or polling.
+
+A single saved budget is a comparison value applied to the currently selected scope, not a set of environment-specific budgets or a spending enforcement policy. The metadata cache retains up to 20,000 resources, and operation history stops further execution at 1,000 entries instead of dropping audit records.
+
+## Progress, diagnostics, currency and graphs
+
+Pending operations show the SDK's `createProgressBar` native progress component in a sticky status panel. The bar is indeterminate because API work has no reliable percentage. A separate read-only progress handler reports actual backend phases, completed data reads and elapsed time without waiting behind the active operation's mutex. It covers Sync, date changes, targeted retries, connection/budget writes, staging, capacity and execution. Cleanup stops polling and disposes chart controllers when the view is destroyed.
+
+Permission failures include the HTTP method, resource endpoint, status, selected provider message/code, request ID when supplied, observation time, and suggested permission/account checks. For example, a failure while reviewing volume cleanup can be `GET /core/volumes/{id}` with HTTP 403: that is the prerequisite volume **read**, not an attempted deletion. The persistent **Request diagnostics** panel opens on failure. No raw response bodies, request headers, keys, tokens or passwords are returned. Confirmed API rejections are recorded as failed operations; ambiguous submissions remain uncertain and are not retried automatically.
+
+USD costs are shown as **USD 81.00** or **USD 450.83**, using a decimal point and no thousands separator, regardless of locale. Currency amounts are rounded to cents; hourly rates may show four decimals. Calculations retain full precision. Dates and times still use the user's locale and detected timezone.
+
+Graphs use FDO's `FDOCharts` host bridge, following the Azure FinOps lifecycle: scoped selected/previous resource spend, resource-type breakdown, month-end run rate versus budget, dollar changes, and selected-resource billing. Charts use reported costs with explicit missing gaps, scope/basis notes and rounding to cents. A collapsed data table contains every graph value; if the host renderer is unavailable the data remains usable. No fabricated daily trend is generated from an aggregate bill.
+
+## Management and FDO capability boundary
+
+The installed `../fdo-sdk` exposes **no dedicated Hyperstack management capability**. This plugin uses the actual available FDO gates: `system.network`, `system.network.https`, and `system.network.scope.public-web-secure`. These are checked by the backend immediately before dispatch, alongside provider permissions. They do not offer a separate read/write Hyperstack grant. A future host-specific management capability can be wired into `authorizeManagement`; no fictional SDK capability is declared.
+
+Execution is limited to the fixed HTTPS API host and two documented endpoints:
+
+- `GET /core/virtual-machines/{id}/hibernate?retain_ip=true|false`
+- `DELETE /core/volumes/{id}`
+
+The iframe cannot choose endpoints, credentials, request methods, or affected IDs. Execution uses the backend’s staged plan and revalidates current resource identity, configuration, state, attachments, organization and capability grants. Hibernation requires an ACTIVE VM and explicit flavor support. A stopped GPU finding can be reviewed, but its plan is blocked until the provider’s ACTIVE prerequisite is satisfied; the plugin never starts the VM automatically. Hibernation releases ephemeral data and does not reserve capacity for resume. The plan states these effects, retains attached volumes, and allows public-IP retention. Contract-backed hibernation is blocked for separate contract review.
+
+Volume deletion requires a fresh AVAILABLE/detached observation, impact acknowledgement and typing the exact resource ID. Before any mutation, a consumed operation marker is flushed to persistent SDK storage. Duplicate in-flight requests serialize. Interrupted/ambiguous requests become uncertain and are never replayed. A verified terminal provider state can reconcile the result on a later Sync. Previously submitted/uncertain operations block another request for the same resource and organization until their outcome is positively confirmed. Network deadlines include response-body parsing, redirects are refused, and backend disposal cancels outstanding work. The cloud APIs are not transactional, so attachments could still change after the final read; provider-side state checks remain authoritative.
+
+## Implementation and checks
+
+- `index.ts`: SDK lifecycle, capability declaration, scoped storage, safe handler bridge.
+- `provider.ts`: documented API reads, pagination, cost normalization, management requests.
+- `domain.ts`: billing windows, filtering, findings, projection and change explanations.
+- `backend.ts`: connection, persistent budget/metadata/audit history, staging and execution.
+- `render.ts`, `styles.css`, `frontend.ts`: SDK DOM composition, responsive UI and self-contained serialized iframe lifecycle.
+
+```sh
+npm --prefix hyperstack-finops run verify
+npm --prefix hyperstack-finops run test:browser
+```
+
+Verification uses the sibling FDO workspace compiler, its CSS loader, SDK declarations and `node:test` runner. Set `FDO_SOURCE_ROOT` and `FDO_SDK_ROOT` for another workspace layout. Browser smoke tests use local Chrome and mocked FDO secret transport and API responses, exercising the built entry and actual serialized frontend with example data plus a custom-date billing fixture. They mount the real FDO chart renderer and verify independent sidebar scrolling, explicit-only selection, IP/volume guidance, exact API date bounds, invalid-range rejection, pending SDK progress, permission diagnostics, targeted bill recovery, incomplete run rates and desktop/mobile chart layout. No live account was used to execute a mutation.
+
+## Verified API references
+
+Checked against the official published [Hyperstack OpenAPI specification](https://docs.hyperstack.cloud/openapi/hyperstack.json) and documentation on 2026-11-26:
+
+- [Pricebook section](https://docs.hyperstack.cloud/docs/api-reference/section-pricebook/) and [bare-array pricebook response](https://docs.hyperstack.cloud/docs/api-reference/get-pricebook/).
+- [VM billing history](https://docs.hyperstack.cloud/docs/api-reference/get-vm-billing-history/), [volume billing history](https://docs.hyperstack.cloud/docs/api-reference/get-volume-billing-history/), and [active/deleted usage](https://docs.hyperstack.cloud/docs/api-reference/get-usage/).
+- [VM hibernation endpoint](https://docs.hyperstack.cloud/docs/api-reference/hibernate-vm/) and [hibernation billing, IP retention and resume capacity](https://docs.hyperstack.cloud/docs/virtual-machines/hibernation/).
+
+SDK patterns were checked against `../fdo-sdk/docs/SAFE_PLUGIN_AUTHORING.md`, capability declarations, secret-service contracts, and the existing availability/FinOps plugins. This package is independent of those plugins at runtime.

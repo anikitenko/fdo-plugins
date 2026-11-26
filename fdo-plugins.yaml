@@ -27,3 +27,7 @@ spec:
       repository: https://github.com/anikitenko/fdo-plugins
       targetRevision: main
       path: /hyperstack-availability
+    - name: hyperstack-finops
+      repository: https://github.com/anikitenko/fdo-plugins
+      targetRevision: main
+      path: /hyperstack-finops

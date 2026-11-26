@@ -1,0 +1,22 @@
+{
+  "name": "fdo-hyperstack-finops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hyperstack billing investigation, savings opportunities and reviewed operations",
+  "source": "index.ts",
+  "main": "dist/index.cjs",
+  "scripts": {
+    "test": "node scripts/verify.mjs test",
+    "build": "node scripts/verify.mjs build",
+    "verify": "node scripts/verify.mjs",
+    "test:browser": "node scripts/browser-smoke.cjs"
+  },
+  "fdo": {
+    "compatibility": {
+      "fdo": ">=1.0.7 <2.0.0",
+      "sdk": ">=1.9.2 <2.0.0",
+      "api": "^1.0.0",
+      "features": []
+    }
+  }
+}
